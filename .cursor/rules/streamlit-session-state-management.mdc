@@ -1,0 +1,20 @@
+---
+description: Utilize Streamlit's session state mechanism for managing GUI state.
+globs: streamlit/app.py
+---
+{
+  "rule_name": "Streamlit Session State Management",
+  "implementation_guidelines": [
+    "Use `st.session_state` to store and manage UI state, such as transactions or user preferences. Ensure proper key management to avoid conflicts. Employ techniques such as debouncing (@rule-debounce) to optimize UI performance.",
+    "python",
+    "if 'transactions' not in st.session_state:",
+    "st.session_state.transactions = load_initial_data()",
+    "def add_transaction(transaction):",
+    "st.session_state.transactions.append(transaction)"
+  ],
+  "code_examples": [],
+  "best_practices": [],
+  "dependencies": [
+    "@rule-debounce"
+  ]
+}

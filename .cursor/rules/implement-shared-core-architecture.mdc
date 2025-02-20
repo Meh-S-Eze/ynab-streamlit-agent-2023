@@ -1,0 +1,16 @@
+---
+description: Separate business logic into a shared core module consumed by both CLI and GUI interfaces to maximize code reuse.
+globs: */
+---
+{
+  "rule_name": "Implement Shared Core Architecture",
+  "implementation_guidelines": [
+    "Create a `core/` directory containing financial operations, API interactions, and calculations. Implement CLI and GUI interfaces that import and utilize this core module. This reduces code duplication and maintains a single source of truth. Leverage dependency injection (@rule-dependency-injection) to allow core components to interact with specific data sources provided by the GUI/CLI."
+  ],
+  "code_examples": [],
+  "best_practices": [],
+  "dependencies": [
+    "@rule-entrypoint-abstraction",
+    "@rule-dependency-injection"
+  ]
+}

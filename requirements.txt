@@ -1,0 +1,26 @@
+# Core dependencies
+requests
+click
+streamlit
+pydantic
+google-generativeai
+
+# Configuration and state management
+PyYAML
+python-dotenv
+
+# Logging and monitoring
+structlog
+
+# Optional: for advanced data manipulation
+pandas
+numpy
+
+# Development and testing
+pytest
+mypy
+black
+isort
+
+# Optional AI and data analysis
+scikit-learn 

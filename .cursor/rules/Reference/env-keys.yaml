@@ -1,0 +1,55 @@
+# Production API Keys and Configuration
+# IMPORTANT: Keep this file secure and never commit to version control
+
+github:
+  full_access_token: "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"
+  read_only_token: "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"
+
+ynab:
+  api_key: "5YTfUea-_BgtRVWgAY_Gdpgqimho-AHD2cwg4Rza5fo"
+  budget_id: "1f13ab12-aed2-4c49-8c51-d6491aff6352"
+
+huggingface:
+  primary_token: "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"
+  admin_token: "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"
+
+google:
+  ai_api_key: "AIzaSyBbzPg4PwcRjLWhWhHbSoi6pLZmVAy9VAY"
+  maps_api_key: "AIzaSyBlykT_5W8QnGOwx9CAygu00el3JeCftew"
+  gemini_api_key: "AIzaSyCIkbH3M90sMfjAaUgq0ZxBteryEkgidDs"
+
+supabase:
+  db_password: "gbgfeuaqdJe3UHXH"
+  anon_key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ4cGF6bHN5bnNqa2lodXZiam1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Mjg1MDgxODEsImV4cCI6MjA0NDA4NDE4MX0.rcNHT-gPIlm7K9xASHdzxT6uXJJunL-q3tHqFQSH9Zo"
+  service_role_key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ4cGF6bHN5bnNqa2lodXZiam1zIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTcyODUwODE4MSwiZXhwIjoyMDQ0MDg0MTgxfQ.ZoV0CGCJKs8AVFlliL5cybXbX_ZVdJ4ObS_q4cf1Ks4"
+  url: "https://fxpazlsynsjkihuvbjms.supabase.co"
+
+anthropic:
+  api_key: "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"
+
+cofounder_ai:
+  api_key: "cfndr-67bb63b03dd2457358c8e3695d16d924"
+
+groq:
+  api_key: "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"
+
+vectorshift:
+  api_key: "sk_eldqjTCupJQ6akkVQvh9aeBSzNa1aMhWY17rU7nQjz0wwuCg"
+  secondary_key: "sk_8HvV3BySnsl3M1qQwNc1ILoMZ7CuMBZNyyhLmYRq75FDlTei"
+
+notion:
+  api_key: "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"
+
+langflow:
+  api_key: "sk-fDK5z5KFyuOoQfqMyAmIYLwuA6aznj14lfqAZ-nSSmw"
+
+openai:
+  api_key: "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"
+
+vercel:
+  api_key: "HIEsRfhCa0Z1hzi9lHmT0j2z"
+
+# All our keys in one place 😊
+tokens:
+  GITHUB_TOKEN: "ghp_ourActualTokenHere"
+  YNAB_API_KEY: "ynab_actualKeyHere" 

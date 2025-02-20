@@ -1,0 +1,13 @@
+---
+description: Implement a command-query separation to improve code organization and testability.
+globs: core/*
+---
+{
+  "rule_name": "Entrypoint Abstraction (CQRS-like)",
+  "implementation_guidelines": [
+    "Structure core module into `commands.py` (for write operations) and `queries.py` (for read operations). Define clear boundaries for each, enabling AI to generate code that targets specific commands/queries. Use the principle of least privilege to ensure each component can only access the commands and queries that it needs."
+  ],
+  "code_examples": [],
+  "best_practices": [],
+  "dependencies": []
+}

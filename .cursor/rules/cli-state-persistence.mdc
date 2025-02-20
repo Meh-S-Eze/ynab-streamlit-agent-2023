@@ -1,0 +1,26 @@
+---
+description: Implement state persistence for the CLI using a simple file-based approach.
+globs: cli/*
+---
+{
+  "rule_name": "CLI State Persistence",
+  "implementation_guidelines": [
+    "Use `pickle` to save and load CLI state from a file (e.g., `~/.budgetcli_state`). Provide error handling for cases where the state file does not exist. Consider implementing more robust state management solutions for complex CLI applications.",
+    "python",
+    "import pickle",
+    "from pathlib import Path",
+    "STATE_FILE = Path.home() / \".budgetcli_state\"",
+    "def save_state(data):",
+    "with open(STATE_FILE, \"wb\") as f:",
+    "pickle.dump(data, f)",
+    "def load_state():",
+    "try:",
+    "with open(STATE_FILE, \"rb\") as f:",
+    "return pickle.load(f)",
+    "except FileNotFoundError:",
+    "return []"
+  ],
+  "code_examples": [],
+  "best_practices": [],
+  "dependencies": []
+}

@@ -1,0 +1,13 @@
+---
+description: Debounce UI-triggered AI operations to prevent excessive API calls.
+globs: streamlit/app.py
+---
+{
+  "rule_name": "Debounce UI-Triggered Operations",
+  "implementation_guidelines": [
+    "Implement a delay (e.g., 500ms) before triggering AI operations from the UI. This prevents users from accidentally triggering multiple API calls by rapidly clicking buttons or changing input values. Debouncing improves the overall responsiveness of the UI and reduces the load on the AI models."
+  ],
+  "code_examples": [],
+  "best_practices": [],
+  "dependencies": []
+}

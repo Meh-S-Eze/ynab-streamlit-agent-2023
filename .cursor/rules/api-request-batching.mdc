@@ -1,0 +1,13 @@
+---
+description: Batch API requests to reduce latency.
+globs: */
+---
+{
+  "rule_name": "API Request Batching",
+  "implementation_guidelines": [
+    "Group multiple API requests into a single batch request. For example, process 5-10 transactions per API call instead of making individual calls for each transaction. This reduces the overhead of making multiple API calls and improves performance."
+  ],
+  "code_examples": [],
+  "best_practices": [],
+  "dependencies": []
+}

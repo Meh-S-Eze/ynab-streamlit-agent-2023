@@ -1,0 +1,17 @@
+---
+description: Use structured prompt templates to improve the accuracy and consistency of AI-generated content.
+globs: *_helper.py
+---
+{
+  "rule_name": "Gemini - Constrained Prompt Engineering",
+  "implementation_guidelines": [
+    "Define clear and concise prompt templates with well-defined input and output formats. Guide AI to generate specific information, like spending breakdowns, alerts, and budget recommendations, in a standardized JSON format. Implement validation layers (@rule-data-validation) to ensure data integrity.",
+    "python",
+    "PROMPT_TEMPLATE = \"\"\"Analyze this YNAB transaction data:\\n{transactions}\\n\\nGenerate:\\n1. Spending category breakdown \\n2. Unusual expenditure alerts\\n3. Next-week budget recommendations\\n\\nOutput as JSON with keys: breakdown, alerts, recommendations\"\"\""
+  ],
+  "code_examples": [],
+  "best_practices": [],
+  "dependencies": [
+    "@rule-data-validation"
+  ]
+}
