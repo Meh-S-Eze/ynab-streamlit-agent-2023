@@ -1,0 +1,23 @@
+---
+description: Implement comprehensive error handling for YNAB API rate limits (429), network failures, Gemini hallucinations, and invalid user input. Missing error handling causes application crashes on the first error condition.
+globs: **/*.py
+rule_name: Comprehensive Error Handling
+---
+{
+  "implementation_guidelines": [
+    "Use `try/except` blocks to catch potential exceptions.",
+    "Handle YNAB API rate limits by implementing retry logic with exponential backoff.",
+    "Handle network failures by retrying API calls or displaying an error message to the user.",
+    "Handle Gemini hallucinations by validating the output and providing informative error messages.",
+    "Handle invalid user input by displaying an error message and prompting the user to re-enter the data.",
+    "Log all errors for debugging purposes."
+  ],
+  "code_example": "try:\n    agent.execute(query)\nexcept YNABAPIError as e:\n    click.echo(f\"API Error: {e.message}\")\nexcept GeminiAnalysisError:\n    click.echo(\"Could not understand request\")",
+  "best_practices": [
+    "Use a consistent pattern for error handling.",
+    "Provide informative error messages to the user.",
+    "Implement a central error logging mechanism.",
+    "Consider using a monitoring tool to track application errors."
+  ],
+  "dependencies": []
+}

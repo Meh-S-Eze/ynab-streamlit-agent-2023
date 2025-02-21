@@ -5,6 +5,10 @@ from .circuit_breaker import CircuitBreaker
 from .config import ConfigManager
 import logging
 import os
+from .shared_models import TransactionCreate, TransactionAmount
+from .transaction_validator import TransactionValidator, DuplicateTransactionError, FutureDateError, InvalidTransactionError
+from .data_validation import DataValidator
+from .date_utils import DateFormatter
 
 class YNABClient:
     def __init__(self, personal_token: str = None):
@@ -164,7 +168,7 @@ class YNABClient:
 
     def _find_best_category_match(self, category_name: str, category_mapping: Dict) -> Optional[str]:
         """
-        Find the best matching category ID using multiple strategies
+        Find the best matching category ID using multiple strategies with enhanced matching
         
         Args:
             category_name (str): Category name to match
@@ -176,31 +180,91 @@ class YNABClient:
         if not category_name:
             return None
             
-        # Enhanced matching strategies
-        strategies = [
-            lambda x: x.lower(),  # Exact lowercase match
-            lambda x: x.replace(' ', '').lower(),  # Remove spaces
-            lambda x: x.replace('&', 'and').lower(),  # Replace & with and
-            lambda x: ''.join(c for c in x if c.isalnum()).lower(),  # Alphanumeric only
-            lambda x: x.split()[0].lower(),  # First word match
-            lambda x: x.split()[-1].lower(),  # Last word match
-        ]
+        # Normalize input category name
+        normalized_input = category_name.lower().strip()
         
-        # Try each strategy
-        for strategy in strategies:
-            processed_name = strategy(category_name)
-            
-            # Direct match
-            if processed_name in category_mapping:
-                return category_mapping[processed_name]['id']
-            
-            # Partial match
-            for key, value in category_mapping.items():
-                if processed_name in key or key in processed_name:
-                    return value['id']
+        # Split into group and category if colon is present
+        group_name = None
+        if ':' in normalized_input:
+            group_name, category_name = normalized_input.split(':', 1)
+            group_name = group_name.strip()
+            category_name = category_name.strip()
+        else:
+            category_name = normalized_input
         
-        self.logger.debug(f"No category match found for: {category_name}")
-        return None
+        # Track match scores for each potential match
+        matches = []
+        
+        for key, value in category_mapping.items():
+            # Skip if group name is provided and doesn't match
+            if group_name and value['group'].lower() != group_name:
+                continue
+            
+            # Calculate match score based on multiple factors
+            score = 0
+            
+            # Exact match gets highest score
+            if key == normalized_input:
+                score = 100
+            
+            # Group and category exact match
+            elif group_name and value['group'].lower() == group_name and value['name'].lower() == category_name:
+                score = 95
+            
+            # Category name exact match (ignoring group)
+            elif value['name'].lower() == category_name:
+                score = 90
+            
+            # Substring matches
+            elif category_name in key:
+                score = 80
+            elif key in category_name:
+                score = 75
+            
+            # Word-level matches
+            input_words = set(category_name.split())
+            key_words = set(key.split())
+            common_words = input_words & key_words
+            if common_words:
+                # Score based on percentage of matching words
+                word_match_score = len(common_words) / max(len(input_words), len(key_words)) * 70
+                score = max(score, word_match_score)
+            
+            # Alphanumeric comparison
+            input_alphanum = ''.join(c.lower() for c in category_name if c.isalnum())
+            key_alphanum = ''.join(c.lower() for c in key if c.isalnum())
+            if input_alphanum == key_alphanum:
+                score = max(score, 85)
+            
+            # Add to matches if score is above threshold
+            if score > 50:  # Minimum threshold for considering a match
+                matches.append({
+                    'id': value['id'],
+                    'name': value['name'],
+                    'group': value['group'],
+                    'score': score
+                })
+        
+        # Sort matches by score
+        matches.sort(key=lambda x: (-x['score'], len(x['name'])))  # Higher score first, shorter name wins ties
+        
+        # Log match results for debugging
+        if matches:
+            best_match = matches[0]
+            self.logger.debug(
+                f"Category match for '{category_name}': "
+                f"{best_match['group']}:{best_match['name']} "
+                f"(score: {best_match['score']})"
+            )
+            if len(matches) > 1:
+                self.logger.debug(
+                    f"Alternative matches: "
+                    f"{', '.join(f'{m['group']}:{m['name']} ({m['score']})' for m in matches[1:3])}"
+                )
+        else:
+            self.logger.warning(f"No category match found for: {category_name}")
+        
+        return matches[0]['id'] if matches else None
 
     @CircuitBreaker(max_failures=3)
     def update_transaction_categories(self, budget_id: Optional[str] = None, transactions: List[Dict] = None):
@@ -220,61 +284,63 @@ class YNABClient:
             self.logger.warning("No transactions provided for category update")
             return None
         
-        # Retrieve existing categories from YNAB
-        category_mapping = self._get_budget_categories(budget_id)
-        
-        if not category_mapping:
-            self.logger.error("Failed to retrieve category mapping from YNAB")
-            return {
-                'total_updated': 0,
-                'transactions': [],
-                'unmatched_categories': [],
-                'error': 'Failed to retrieve category mapping'
-            }
-        
-        # Prepare transactions for YNAB API update
-        update_payload = {
-            "transactions": []
-        }
-        
-        # Track unmatched categories for logging
-        unmatched_categories = set()
-        matched_categories = {}
-        
-        for transaction in transactions:
-            category_name = transaction.get('category_name', '')
-            self.logger.debug(f"Processing category update for transaction {transaction.get('id')}: {category_name}")
-            
-            # Try to find a matching category
-            category_id = self._find_best_category_match(category_name, category_mapping)
-            
-            # If no match, log and skip
-            if not category_id:
-                unmatched_categories.add(category_name)
-                self.logger.warning(f"No category match found for: {category_name}")
-                continue
-            
-            # Track successful matches
-            matched_name = next((cat['name'] for cat in category_mapping.values() if cat['id'] == category_id), None)
-            if matched_name:
-                matched_categories[category_name] = matched_name
-                self.logger.debug(f"Matched category {category_name} to {matched_name}")
-            
-            # Prepare transaction update
-            update_payload['transactions'].append({
-                'id': transaction.get('id'),
-                'category_id': category_id
-            })
-        
-        # Log category matching results
-        if matched_categories:
-            self.logger.info(f"Category matches: {matched_categories}")
-        if unmatched_categories:
-            self.logger.warning(f"Unmatched categories: {unmatched_categories}")
-        
-        # Perform batch update
         try:
-            # Only update if we have transactions to update
+            # Validate update payloads
+            validated_updates = DataValidator.validate_ynab_update(transactions)
+            
+            # Retrieve existing categories from YNAB
+            category_mapping = self._get_budget_categories(budget_id)
+            
+            if not category_mapping:
+                self.logger.error("Failed to retrieve category mapping from YNAB")
+                return {
+                    'total_updated': 0,
+                    'transactions': [],
+                    'unmatched_categories': [],
+                    'error': 'Failed to retrieve category mapping'
+                }
+            
+            # Prepare transactions for YNAB API update
+            update_payload = {
+                "transactions": []
+            }
+            
+            # Track unmatched categories for logging
+            unmatched_categories = set()
+            matched_categories = {}
+            
+            for update in validated_updates:
+                category_name = update.category_name
+                self.logger.debug(f"Processing category update for transaction {update.transaction_id}: {category_name}")
+                
+                # Try to find a matching category
+                category_id = self._find_best_category_match(category_name, category_mapping)
+                
+                # If no match, log and skip
+                if not category_id:
+                    unmatched_categories.add(category_name)
+                    self.logger.warning(f"No category match found for: {category_name}")
+                    continue
+                
+                # Track successful matches
+                matched_name = next((cat['name'] for cat in category_mapping.values() if cat['id'] == category_id), None)
+                if matched_name:
+                    matched_categories[category_name] = matched_name
+                    self.logger.debug(f"Matched category {category_name} to {matched_name}")
+                
+                # Prepare transaction update
+                update_payload['transactions'].append({
+                    'id': update.transaction_id,
+                    'category_id': category_id
+                })
+            
+            # Log category matching results
+            if matched_categories:
+                self.logger.info(f"Category matches: {matched_categories}")
+            if unmatched_categories:
+                self.logger.warning(f"Unmatched categories: {unmatched_categories}")
+            
+            # Perform batch update
             if update_payload['transactions']:
                 self.logger.info(f"Updating {len(update_payload['transactions'])} transactions with new categories")
                 response = requests.patch(
@@ -302,6 +368,9 @@ class YNABClient:
                     'category_matches': matched_categories
                 }
         
+        except ValueError as ve:
+            self.logger.error(f"Validation error: {ve}")
+            raise
         except requests.RequestException as e:
             self.logger.error(f"Failed to update transaction categories: {e}")
             self.logger.error(f"Payload: {update_payload}")
@@ -357,6 +426,22 @@ class YNABClient:
             'transactions': transactions
         }
 
+    def _format_date_for_api(self, input_date) -> str:
+        """
+        Format a date for the YNAB API using ISO-8601
+        
+        Args:
+            input_date: Date to format
+        
+        Returns:
+            str: ISO-8601 formatted date string
+        """
+        try:
+            return DateFormatter.format_date(input_date)
+        except ValueError as e:
+            self.logger.error(f"Date formatting error: {e}")
+            raise
+
     def create_transaction(self, budget_id: Optional[str] = None, transaction: Dict = None):
         """
         Create a transaction with comprehensive validation and error handling
@@ -371,60 +456,74 @@ class YNABClient:
         # Use default budget ID if not provided
         budget_id = budget_id or self.budget_id
         
-        # Validate input
-        if not transaction:
-            raise ValueError("Transaction details must be provided")
-        
-        # Validate transaction structure
-        required_fields = ['account_id', 'date', 'amount']
-        for field in required_fields:
-            if field not in transaction:
-                raise ValueError(f"Missing required field: {field}")
-        
-        # Milliunit conversion using Decimal for precise handling
         try:
-            from decimal import Decimal, ROUND_HALF_UP
+            # Import validation dependencies
+            from .shared_models import TransactionCreate, TransactionAmount
+            from .transaction_validator import TransactionValidator, DuplicateTransactionError, FutureDateError, InvalidTransactionError
             
-            # Handle string or numeric input
-            amount_str = str(transaction['amount']).replace(',', '')
+            # Format date to ISO-8601 if present
+            if 'date' in transaction:
+                transaction['date'] = self._format_date_for_api(transaction['date'])
             
-            # Convert amount to milliunits with precise rounding
-            # Multiply by -1 if it's an outflow (negative amount)
-            is_outflow = transaction.get('is_outflow', amount_str.startswith('-'))
-            base_amount = abs(Decimal(amount_str))
-            milliunits = int(
-                base_amount.quantize(
-                    Decimal('0.001'), 
-                    rounding=ROUND_HALF_UP
-                ) * 1000
-            )
+            # Convert amount to TransactionAmount if not already
+            if 'amount' in transaction and not isinstance(transaction['amount'], TransactionAmount):
+                amount_value = transaction['amount']
+                is_outflow = amount_value < 0 if isinstance(amount_value, (int, float)) else transaction.get('is_outflow', True)
+                transaction['amount'] = TransactionAmount(
+                    amount=abs(float(amount_value)) if isinstance(amount_value, (int, float)) else amount_value,
+                    is_outflow=is_outflow
+                )
             
-            # Apply negative sign for outflows
-            transaction['amount'] = -milliunits if is_outflow else milliunits
+            # Create transaction model
+            transaction_model = TransactionCreate(**transaction)
             
-        except Exception as e:
-            self.logger.error(f"Milliunit conversion error: {e}")
-            raise ValueError(f"Invalid amount format: {transaction['amount']}")
-        
-        # Prepare transaction payload with safe defaults
-        payload = {
-            'transaction': {
-                'account_id': transaction['account_id'],
-                'date': transaction['date'],
-                'amount': transaction['amount'],
-                'payee_name': transaction.get('payee_name', ''),
-                'memo': transaction.get('memo', ''),
-                'cleared': transaction.get('cleared', 'uncleared'),
-                'approved': transaction.get('approved', False),
-                'category_id': transaction.get('category_id')
+            # Get existing transactions for duplicate checking
+            existing_transactions = self.get_transactions(budget_id)
+            
+            # Validate transaction through pipeline
+            validator = TransactionValidator()
+            try:
+                validated_transaction = validator.validate_transaction(
+                    transaction_model,
+                    existing_transactions
+                )
+            except DuplicateTransactionError as e:
+                return {
+                    'status': 'warning',
+                    'message': str(e),
+                    'details': {
+                        'error_type': 'duplicate',
+                        'transaction': transaction_model.dict()
+                    }
+                }
+            except FutureDateError as e:
+                return {
+                    'status': 'error',
+                    'message': str(e),
+                    'details': {
+                        'error_type': 'future_date',
+                        'transaction': transaction_model.dict()
+                    }
+                }
+            except InvalidTransactionError as e:
+                return {
+                    'status': 'error',
+                    'message': str(e),
+                    'details': {
+                        'error_type': 'validation_error',
+                        'transaction': transaction_model.dict()
+                    }
+                }
+            
+            # Convert to YNAB API format
+            payload = {
+                'transaction': validated_transaction.to_api_format()
             }
-        }
-        
-        # Remove None values from payload
-        payload['transaction'] = {k: v for k, v in payload['transaction'].items() if v is not None}
-        
-        # Attempt transaction creation
-        try:
+            
+            # Remove None values from payload
+            payload['transaction'] = {k: v for k, v in payload['transaction'].items() if v is not None}
+            
+            # Attempt transaction creation
             response = requests.post(
                 f"{self.base_url}/budgets/{budget_id}/transactions", 
                 headers=self.headers,
@@ -456,27 +555,76 @@ class YNABClient:
                     'message': response.text
                 }
         
-        except requests.RequestException as e:
+        except ValueError as ve:
+            self.logger.error(f"Transaction validation error: {ve}")
+            return {
+                'status': 'error',
+                'message': f'Validation error: {str(ve)}'
+            }
+        except Exception as e:
             self.logger.error(f"Transaction creation request failed: {e}")
             return {
                 'status': 'error',
                 'message': f'Network error: {str(e)}'
             }
 
+    @CircuitBreaker(max_failures=3)
     def get_accounts(self, budget_id: Optional[str] = None) -> List[Dict]:
         """
-        Get all accounts for a budget
+        Get all accounts for a budget with enhanced error handling
         
         Args:
             budget_id (Optional[str]): Budget ID to get accounts for. Uses default if not provided.
         
         Returns:
-            List of account dictionaries
+            List of account dictionaries with structure:
+            {
+                'id': str,
+                'name': str,
+                'type': str,
+                'on_budget': bool,
+                'closed': bool,
+                'balance': int,  # Balance in milliunits
+                'cleared_balance': int,  # Cleared balance in milliunits
+                'uncleared_balance': int,  # Uncleared balance in milliunits
+                'transfer_payee_id': Optional[str],
+                'deleted': bool
+            }
+        
+        Raises:
+            requests.RequestException: If the API request fails
+            CircuitBreakerError: If too many failures occur
         """
-        budget_id = budget_id or self.budget_id
-        response = requests.get(f"{self.base_url}/budgets/{budget_id}/accounts", headers=self.headers)
-        response.raise_for_status()
-        return response.json()['data']['accounts']
+        try:
+            budget_id = budget_id or self.budget_id
+            self.logger.debug(f"Retrieving accounts for budget {budget_id}")
+            
+            response = requests.get(
+                f"{self.base_url}/budgets/{budget_id}/accounts",
+                headers=self.headers
+            )
+            response.raise_for_status()
+            
+            accounts = response.json()['data']['accounts']
+            
+            # Log account details for debugging
+            for account in accounts:
+                self.logger.debug(
+                    f"Account {account.get('id')}: "
+                    f"name={account.get('name', 'None')}, "
+                    f"type={account.get('type', 'None')}, "
+                    f"balance={account.get('balance', 0)}"
+                )
+            
+            self.logger.info(f"Retrieved {len(accounts)} accounts")
+            return accounts
+            
+        except requests.RequestException as e:
+            self.logger.error(f"Failed to retrieve accounts: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                self.logger.error(f"Response status: {e.response.status_code}")
+                self.logger.error(f"Response body: {e.response.text}")
+            raise
 
     def get_budget_balance(self, budget_id: Optional[str] = None) -> float:
         """
@@ -491,4 +639,193 @@ class YNABClient:
         budget_id = budget_id or self.budget_id
         response = requests.get(f"{self.base_url}/budgets/{budget_id}", headers=self.headers)
         response.raise_for_status()
-        return response.json()['data']['budget']['balance'] 
+        return response.json()['data']['budget']['balance']
+
+    @CircuitBreaker(max_failures=3)
+    def get_payees(self, budget_id: Optional[str] = None) -> List[Dict]:
+        """
+        Get all payees for a budget with enhanced error handling
+        
+        Args:
+            budget_id (Optional[str]): Budget ID to get payees for. Uses default if not provided.
+        
+        Returns:
+            List of payee dictionaries with structure:
+            {
+                'id': str,
+                'name': str,
+                'transfer_account_id': Optional[str],
+                'deleted': bool
+            }
+        
+        Raises:
+            requests.RequestException: If the API request fails
+            CircuitBreakerError: If too many failures occur
+        """
+        try:
+            budget_id = budget_id or self.budget_id
+            self.logger.debug(f"Retrieving payees for budget {budget_id}")
+            
+            response = requests.get(
+                f"{self.base_url}/budgets/{budget_id}/payees",
+                headers=self.headers
+            )
+            response.raise_for_status()
+            
+            payees = response.json()['data']['payees']
+            
+            # Log payee details for debugging
+            active_payees = [p for p in payees if not p.get('deleted', False)]
+            deleted_payees = [p for p in payees if p.get('deleted', False)]
+            
+            self.logger.debug(
+                f"Retrieved {len(active_payees)} active payees and "
+                f"{len(deleted_payees)} deleted payees"
+            )
+            
+            for payee in active_payees:
+                self.logger.debug(
+                    f"Payee {payee.get('id')}: "
+                    f"name={payee.get('name', 'None')}, "
+                    f"transfer_account={payee.get('transfer_account_id', 'None')}"
+                )
+            
+            self.logger.info(f"Retrieved {len(payees)} total payees")
+            return payees
+            
+        except requests.RequestException as e:
+            self.logger.error(f"Failed to retrieve payees: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                self.logger.error(f"Response status: {e.response.status_code}")
+                self.logger.error(f"Response body: {e.response.text}")
+            raise
+
+    @CircuitBreaker(max_failures=3)
+    def get_categories(self, budget_id: Optional[str] = None) -> List[Dict]:
+        """
+        Get all categories for a budget with enhanced error handling
+        
+        Args:
+            budget_id (Optional[str]): Budget ID to get categories for. Uses default if not provided.
+        
+        Returns:
+            List of category group dictionaries with nested categories:
+            {
+                'id': str,
+                'name': str,
+                'hidden': bool,
+                'deleted': bool,
+                'categories': [
+                    {
+                        'id': str,
+                        'category_group_id': str,
+                        'name': str,
+                        'hidden': bool,
+                        'deleted': bool,
+                        'balance': int,  # Balance in milliunits
+                        'goal_type': Optional[str],
+                        'goal_target': Optional[int],
+                        'goal_percentage_complete': Optional[int]
+                    }
+                ]
+            }
+        
+        Raises:
+            requests.RequestException: If the API request fails
+            CircuitBreakerError: If too many failures occur
+        """
+        try:
+            budget_id = budget_id or self.budget_id
+            self.logger.debug(f"Retrieving categories for budget {budget_id}")
+            
+            response = requests.get(
+                f"{self.base_url}/budgets/{budget_id}/categories",
+                headers=self.headers
+            )
+            response.raise_for_status()
+            
+            category_groups = response.json()['data']['category_groups']
+            
+            # Log category details for debugging
+            total_categories = 0
+            active_categories = 0
+            
+            for group in category_groups:
+                if group.get('deleted', False):
+                    continue
+                    
+                group_categories = [
+                    c for c in group.get('categories', [])
+                    if not c.get('deleted', False)
+                ]
+                
+                total_categories += len(group.get('categories', []))
+                active_categories += len(group_categories)
+                
+                self.logger.debug(
+                    f"Category Group {group.get('name')}: "
+                    f"{len(group_categories)} active categories, "
+                    f"hidden={group.get('hidden', False)}"
+                )
+                
+                for category in group_categories:
+                    self.logger.debug(
+                        f"Category {category.get('id')}: "
+                        f"name={category.get('name')}, "
+                        f"balance={category.get('balance', 0)}, "
+                        f"goal_type={category.get('goal_type', 'None')}"
+                    )
+            
+            self.logger.info(
+                f"Retrieved {len(category_groups)} category groups with "
+                f"{active_categories} active categories out of {total_categories} total"
+            )
+            return category_groups
+            
+        except requests.RequestException as e:
+            self.logger.error(f"Failed to retrieve categories: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                self.logger.error(f"Response status: {e.response.status_code}")
+                self.logger.error(f"Response body: {e.response.text}")
+            raise
+
+    def get_category_by_id(self, category_id: str, budget_id: Optional[str] = None) -> Optional[Dict]:
+        """
+        Get a specific category by its ID with enhanced error handling
+        
+        Args:
+            category_id (str): ID of the category to retrieve
+            budget_id (Optional[str]): Budget ID to get category from. Uses default if not provided.
+        
+        Returns:
+            Category dictionary or None if not found
+        
+        Raises:
+            requests.RequestException: If the API request fails (except 404)
+        """
+        try:
+            budget_id = budget_id or self.budget_id
+            self.logger.debug(f"Retrieving category {category_id} from budget {budget_id}")
+            
+            response = requests.get(
+                f"{self.base_url}/budgets/{budget_id}/categories/{category_id}",
+                headers=self.headers
+            )
+            response.raise_for_status()
+            
+            category = response.json()['data']['category']
+            self.logger.debug(
+                f"Retrieved category: {category.get('name')}, "
+                f"balance={category.get('balance', 0)}"
+            )
+            return category
+            
+        except requests.RequestException as e:
+            if hasattr(e, 'response') and e.response.status_code == 404:
+                self.logger.warning(f"Category {category_id} not found")
+                return None
+            self.logger.error(f"Failed to retrieve category: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                self.logger.error(f"Response status: {e.response.status_code}")
+                self.logger.error(f"Response body: {e.response.text}")
+            raise 

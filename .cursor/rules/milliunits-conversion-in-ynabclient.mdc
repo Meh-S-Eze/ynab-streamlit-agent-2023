@@ -1,0 +1,21 @@
+---
+description: Transaction amounts must be converted to milliunits (integer representation of currency with 3 decimal places) before sending to the YNAB API. Failing to do so will result in API errors or incorrect monetary values.
+globs: **/*YNABClient.py
+rule_name: Milliunits Conversion in YNABClient
+---
+{
+  "implementation_guidelines": [
+    "Locate all methods that create or update transactions (e.g., create_transaction, update_transaction).",
+    "Multiply the amount (float or decimal) by 1000 and convert the result to an integer.",
+    "Ensure the transaction payload uses the milliunits integer value for the amount field.",
+    "Implement a utility function for milliunit conversion to ensure consistency."
+  ],
+  "code_example": "def create_transaction(self, amount: float, ...):\n    milliunits = int(amount * 1000)\n    payload = {\n        \"amount\": milliunits,\n        ...\n    }\n    # API call",
+  "best_practices": [
+    "Use a dedicated function for milliunits conversion to avoid code duplication.",
+    "Include unit tests to verify correct milliunits calculation for various input amounts.",
+    "Handle potential overflow errors when converting large amounts to milliunits.",
+    "Document the conversion process clearly in the code."
+  ],
+  "dependencies": []
+}

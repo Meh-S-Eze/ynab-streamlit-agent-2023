@@ -1,0 +1,22 @@
+---
+description: Implement critical YNAB API endpoints that are currently missing: `/budgets/{budget_id}/accounts`, `/budgets/{budget_id}/payees`, and `/budgets/{budget_id}/categories`. These endpoints are required for balance checks, payee handling, and category updates.
+globs: **/*YNABClient.py
+rule_name: Implement Missing YNAB API Endpoints
+---
+{
+  "implementation_guidelines": [
+    "Add methods to the `YNABClient` class for each missing endpoint (e.g., `get_account_balances()`, `get_payees()`, `get_categories()`).",
+    "Use the `_get()` or `_post()` methods to make API calls to the corresponding endpoints.",
+    "Parse the API response and return relevant data (e.g., account balances, payee lists, category lists).",
+    "Handle API errors and exceptions appropriately.",
+    "Implement pagination if the API response is paginated."
+  ],
+  "code_example": "class YNABClient:\n    def get_account_balances(self):\n        response = self._get(f\"/budgets/{self.budget_id}/accounts\")\n        return [a[\"balance\"] for a in response[\"data\"][\"accounts\"]]",
+  "best_practices": [
+    "Use a consistent pattern for implementing API endpoint methods.",
+    "Cache API responses to reduce the number of API calls.",
+    "Implement retry logic to handle transient API errors.",
+    "Include comprehensive logging for API calls and responses."
+  ],
+  "dependencies": []
+}

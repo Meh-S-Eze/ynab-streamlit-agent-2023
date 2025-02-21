@@ -13,6 +13,8 @@ import re
 from datetime import date, datetime
 from decimal import Decimal
 import requests
+from .shared_models import TransactionCreate, TransactionAmount
+from .data_validation import DataValidator
 
 @runtime_checkable
 class AnalysisModule(Protocol):
@@ -84,6 +86,14 @@ class SpendingAnalysis(BaseModel):
     total_spent: float = Field(..., description="Total amount spent")
     category_breakdown: Dict[str, float] = Field(..., description="Spending by category")
     unusual_transactions: List[Dict] = Field(default_factory=list, description="Transactions flagged as unusual")
+
+class GeminiHallucinationError(Exception):
+    """Raised when Gemini's response is detected as a hallucination"""
+    pass
+
+class InvalidGeminiResponseError(Exception):
+    """Raised when Gemini's response cannot be parsed or validated"""
+    pass
 
 class GeminiSpendingAnalyzer:
     """
@@ -221,148 +231,130 @@ class GeminiSpendingAnalyzer:
             self.logger.error(f"AI Category Matching failed: {e}")
             return []
 
+    def _validate_gemini_response(self, response_text: str, expected_fields: List[str]) -> Dict:
+        """
+        Validate Gemini's response for hallucinations and required fields
+        
+        Args:
+            response_text (str): Raw response from Gemini
+            expected_fields (List[str]): List of required fields
+        
+        Returns:
+            Dict: Validated response data
+            
+        Raises:
+            GeminiHallucinationError: If response appears to be a hallucination
+            InvalidGeminiResponseError: If response cannot be parsed or is invalid
+        """
+        try:
+            # Clean response text
+            clean_text = response_text.strip()
+            if '```' in clean_text:
+                clean_text = re.search(r'```(?:json)?\n?(.*?)\n?```', clean_text, re.DOTALL).group(1)
+            
+            # Try to parse JSON
+            try:
+                parsed_data = json.loads(clean_text)
+            except json.JSONDecodeError as e:
+                raise InvalidGeminiResponseError(f"Failed to parse JSON response: {e}")
+            
+            # Check for hallucination indicators
+            if isinstance(parsed_data, dict):
+                # Check for nonsensical values
+                for key, value in parsed_data.items():
+                    if isinstance(value, (int, float)) and value > 1e6:  # Unreasonably large numbers
+                        raise GeminiHallucinationError(f"Unreasonable value detected: {key}={value}")
+                    if isinstance(value, str) and len(value) > 1000:  # Extremely long strings
+                        raise GeminiHallucinationError(f"Unreasonably long string detected for {key}")
+            
+            # Validate required fields
+            missing_fields = [field for field in expected_fields if field not in parsed_data]
+            if missing_fields:
+                raise InvalidGeminiResponseError(f"Missing required fields: {', '.join(missing_fields)}")
+            
+            return parsed_data
+            
+        except (AttributeError, TypeError) as e:
+            raise InvalidGeminiResponseError(f"Invalid response structure: {e}")
+
     @CircuitBreaker()
     def categorize_transactions(self, transactions: List[Dict], ynab_categories: Optional[List[Dict]] = None) -> Dict:
         """
-        Categorize a list of transactions using Gemini AI with enhanced semantic matching
-        
-        Args:
-            transactions (List[Dict]): Transactions to categorize
-            ynab_categories (Optional[List[Dict]]): List of valid YNAB categories
-        
-        Returns:
-            Dict with categorization results
+        Categorize transactions with enhanced error handling
         """
         self.logger.info(f"Categorizing {len(transactions)} transactions")
-        
-        # Prepare category context
-        category_context = []
-        if ynab_categories:
-            for cat in ynab_categories:
-                category_context.append({
-                    'name': cat['name'],
-                    'group': cat.get('group', ''),
-                    'examples': self._generate_category_examples(cat['name'])
-                })
-        
-        # Prepare prompt for Gemini
-        prompt = """
-        You are a financial transaction categorization expert. Analyze these transactions and assign the most appropriate category.
-        
-        CRITICAL RULES:
-        1. ONLY use categories from the provided list
-        2. Assign confidence scores (0.0 to 1.0) based on:
-           - Exact merchant/category matches: 0.9-1.0
-           - Strong semantic matches: 0.7-0.8
-           - Partial matches: 0.4-0.6
-           - Weak/uncertain matches: 0.1-0.3
-        3. Consider transaction context:
-           - Transaction amount
-           - Merchant name patterns
-           - Transaction date
-           - Historical patterns
-        4. If unsure, use "Uncategorized" with low confidence
-        
-        Available Categories with Examples:
-        {}
-        
-        Transactions to Categorize:
-        {}
-        
-        Provide a JSON response with:
-        [
-            {{
-                "transaction_id": "id",
-                "category": "EXACT category name",
-                "confidence": 0.95,
-                "reasoning": "Clear explanation of category choice",
-                "alternative_categories": [
-                    {{"name": "Second best category", "confidence": 0.7}},
-                    {{"name": "Third best category", "confidence": 0.5}}
-                ]
-            }}
-        ]
-        """.format(
-            json.dumps(category_context, indent=2),
-            json.dumps([{
-                'id': t.get('id', ''),
-                'description': t.get('payee_name', '') or t.get('memo', ''),
-                'amount': t.get('amount', 0),
-                'date': t.get('date', ''),
-                'cleared': t.get('cleared', 'uncleared')
-            } for t in transactions], indent=2)
-        )
         
         try:
             # Generate categorization with enhanced context
             response = self.model.generate_content(
-                prompt,
+                self._create_categorization_prompt(transactions, ynab_categories),
                 generation_config={
                     'temperature': 0.2,
                     'max_output_tokens': 2048
                 }
             )
             
-            # Parse and validate results
+            # Validate response
+            required_fields = ['transaction_id', 'category_name', 'confidence', 'reasoning']
             try:
-                # Clean response text
-                clean_text = response.text.strip('`').strip()
-                categorization_results = json.loads(clean_text)
-                
-                # Validate and normalize results
-                validated_results = []
-                for result in categorization_results:
-                    # Validate category exists
-                    category = result.get('category', 'Uncategorized')
-                    if ynab_categories and not any(cat['name'] == category for cat in ynab_categories):
-                        category = 'Uncategorized'
-                        confidence = 0.1
-                    else:
-                        confidence = min(max(result.get('confidence', 0.5), 0.0), 1.0)
-                    
-                    validated_results.append(
-                        ConfidenceResult(
-                            category=category,
-                            confidence=confidence,
-                            reasoning=result.get('reasoning', 'No reasoning provided'),
-                            transaction_ids=[result.get('transaction_id', 'unknown')],
-                            alternative_categories=result.get('alternative_categories', [])
-                        )
-                    )
-                
-                return {
-                    'categorization_results': validated_results,
-                    'total_processed': len(validated_results),
-                    'high_confidence_count': sum(1 for r in validated_results if r.confidence >= 0.7),
-                    'low_confidence_count': sum(1 for r in validated_results if r.confidence < 0.4),
-                    'average_confidence': sum(r.confidence for r in validated_results) / len(validated_results) if validated_results else 0
-                }
+                categorization_results = self._validate_gemini_response(
+                    response.text,
+                    required_fields
+                )
+            except GeminiHallucinationError as he:
+                self.logger.error(f"Detected hallucination in Gemini response: {he}")
+                # Retry with more strict parameters
+                response = self.model.generate_content(
+                    self._create_categorization_prompt(transactions, ynab_categories),
+                    generation_config={
+                        'temperature': 0.1,  # Lower temperature for more focused response
+                        'max_output_tokens': 1024,  # Limit response size
+                        'top_p': 0.7,  # More focused token selection
+                        'top_k': 20  # Limit vocabulary
+                    }
+                )
+                # Validate retry response
+                categorization_results = self._validate_gemini_response(
+                    response.text,
+                    required_fields
+                )
             
-            except Exception as parsing_error:
-                self.logger.error(f"Failed to parse categorization response: {parsing_error}")
-                return {
-                    'categorization_results': [
-                        ConfidenceResult(
-                            category='Uncategorized',
-                            confidence=0.0,
-                            reasoning=f"Error parsing results: {str(parsing_error)}",
-                            transaction_ids=[t.get('id', 'unknown') for t in transactions]
-                        )
-                    ]
-                }
-        
+            # Validate results through DataValidator
+            validated_results = DataValidator.validate_gemini_analysis(categorization_results)
+            
+            # Convert validated results to YNAB update payloads
+            update_payloads = []
+            for result in validated_results:
+                update_payloads.append(
+                    DataValidator.prepare_ynab_payload(result).dict()
+                )
+            
+            return {
+                'categorization_results': [result.dict() for result in validated_results],
+                'update_payloads': update_payloads,
+                'total_processed': len(validated_results),
+                'high_confidence_count': sum(1 for r in validated_results if r.confidence >= 0.7),
+                'low_confidence_count': sum(1 for r in validated_results if r.confidence < 0.4),
+                'average_confidence': sum(r.confidence for r in validated_results) / len(validated_results) if validated_results else 0
+            }
+            
+        except GeminiHallucinationError as he:
+            self.logger.error(f"Gemini hallucination detected even after retry: {he}")
+            return {
+                'error': 'hallucination_detected',
+                'message': str(he),
+                'recommendation': 'Please review transactions manually'
+            }
+        except InvalidGeminiResponseError as ie:
+            self.logger.error(f"Invalid Gemini response: {ie}")
+            return {
+                'error': 'invalid_response',
+                'message': str(ie),
+                'recommendation': 'Please try again with fewer transactions'
+            }
         except Exception as e:
             self.logger.error(f"Categorization failed: {e}")
-            return {
-                'categorization_results': [
-                    ConfidenceResult(
-                        category='Uncategorized',
-                        confidence=0.0,
-                        reasoning=str(e),
-                        transaction_ids=[t.get('id', 'unknown') for t in transactions]
-                    )
-                ]
-            }
+            raise
 
     def _generate_category_examples(self, category_name: str) -> List[str]:
         """Generate example transactions for a category to improve matching"""
@@ -577,151 +569,81 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
 
     @CircuitBreaker()
     def parse_transaction_creation(self, query: str) -> Dict:
-        """
-        Parse transaction details from natural language query with enhanced parsing
-        
-        Args:
-            query (str): Natural language query about transaction creation
-        
-        Returns:
-            Dict with parsed transaction details
-        """
-        # Prepare prompt for transaction parsing
-        prompt = """
-        You are a financial transaction parser. Your task is to extract transaction details from this query:
-        "{}"
-        
-        CRITICAL RULES:
-        1. ALWAYS extract the amount:
-           - Look for numbers with currency symbols ($, £, €)
-           - Look for numbers followed by currency words (dollars, euros)
-           - Convert written numbers to digits (e.g., "fifty" -> 50)
-           - Remove commas and currency symbols
-           - Return amount as a float
-           - Example: "$25" -> 25.00, "25 dollars" -> 25.00
-        2. Determine if it's an expense or income:
-           - Default to expense (is_outflow: true) unless clearly income
-           - Words indicating expense: "paid", "bought", "spent", "for", "at"
-           - Words indicating income: "received", "earned", "income", "salary"
-        3. Extract the date:
-           - Look for explicit dates in any format
-           - Look for relative dates ("yesterday", "tomorrow", "next week")
-           - Default to today if no date found
-           - Return date in YYYY-MM-DD format
-        4. Extract payee/merchant name:
-           - Look for business names
-           - Look for words after "at", "to", "from"
-        5. Extract category if mentioned:
-           - Look for words after "for" that indicate category
-           - Look for common category names (groceries, entertainment, etc.)
-        
-        You MUST return a JSON object with these fields:
-        {{
-            "amount": float,
-            "is_outflow": boolean,
-            "date": "YYYY-MM-DD",
-            "payee_name": "string",
-            "memo": "string",
-            "category_name": "string or null"
-        }}
-        
-        Example 1:
-        Input: "Spent $42.50 at Walmart for groceries"
-        Output:
-        {{
-            "amount": 42.50,
-            "is_outflow": true,
-            "date": "2024-02-21",
-            "payee_name": "Walmart",
-            "memo": "Groceries purchase",
-            "category_name": "Groceries"
-        }}
-        
-        Example 2:
-        Input: "Got paid $1000 from work yesterday"
-        Output:
-        {{
-            "amount": 1000.00,
-            "is_outflow": false,
-            "date": "2024-02-20",
-            "payee_name": "Work",
-            "memo": "Income payment",
-            "category_name": "Inflow: Ready to Assign"
-        }}
-        
-        Example 3:
-        Input: "Create a new transaction for $25 at Target for groceries on February 15, 2025"
-        Output:
-        {{
-            "amount": 25.00,
-            "is_outflow": true,
-            "date": "2025-02-15",
-            "payee_name": "Target",
-            "memo": "Groceries purchase",
-            "category_name": "Groceries"
-        }}
-        
-        IMPORTANT: Return ONLY the JSON object, no additional text or explanation.
-        """.format(query)
-        
+        """Parse transaction details with enhanced error handling"""
         try:
-            # Generate transaction details
             response = self.model.generate_content(
-                prompt,
+                self._create_transaction_prompt(query),
                 generation_config={
                     'temperature': 0.1,
                     'max_output_tokens': 512
                 }
             )
             
-            # Parse the response
+            # Validate response
+            required_fields = ['amount', 'date', 'payee_name']
             try:
-                # Clean response text
-                response_text = response.text.strip()
-                if '```' in response_text:
-                    response_text = re.search(r'```(?:json)?\n?(.*?)\n?```', response_text, re.DOTALL).group(1)
-                
-                # Parse JSON
-                transaction_details = json.loads(response_text)
-                
-                # Validate amount
-                if 'amount' not in transaction_details:
-                    raise ValueError("Amount is required")
-                
-                # Convert amount to float and handle commas
-                amount_str = str(transaction_details['amount']).replace(',', '')
-                try:
-                    transaction_details['amount'] = float(amount_str)
-                except (ValueError, TypeError):
-                    raise ValueError(f"Invalid amount format: {amount_str}")
-                
-                # Convert amount to milliunits for YNAB
-                transaction_details['amount'] = int(transaction_details['amount'] * 1000)
-                if transaction_details.get('is_outflow', True):
-                    transaction_details['amount'] = -transaction_details['amount']
-                
-                # Validate and set defaults
-                transaction_details.setdefault('is_outflow', True)
-                transaction_details.setdefault('date', date.today().isoformat())
-                transaction_details.setdefault('payee_name', '')
-                transaction_details.setdefault('memo', '')
-                transaction_details.setdefault('category_name', None)
-                
-                # Validate date format
-                try:
-                    datetime.strptime(transaction_details['date'], '%Y-%m-%d')
-                except ValueError:
-                    transaction_details['date'] = date.today().isoformat()
-                
-                return transaction_details
+                parsed_details = self._validate_gemini_response(
+                    response.text,
+                    required_fields
+                )
+            except GeminiHallucinationError:
+                # Retry with more constraints
+                response = self.model.generate_content(
+                    self._create_transaction_prompt(query),
+                    generation_config={
+                        'temperature': 0.05,
+                        'max_output_tokens': 256,
+                        'top_p': 0.5,
+                        'top_k': 10
+                    }
+                )
+                parsed_details = self._validate_gemini_response(
+                    response.text,
+                    required_fields
+                )
             
-            except Exception as parsing_error:
-                self.logger.error("Failed to parse transaction details: %s", str(parsing_error))
-                raise ValueError(f"Could not understand transaction details: {parsing_error}")
-        
+            # Additional validation through models
+            try:
+                # Create TransactionAmount
+                amount = TransactionAmount(
+                    amount=abs(float(parsed_details['amount'])),
+                    is_outflow=parsed_details.get('is_outflow', True)
+                )
+                
+                # Create full transaction
+                transaction = TransactionCreate(
+                    amount=amount,
+                    date=parsed_details['date'],
+                    payee_name=parsed_details.get('payee_name'),
+                    memo=parsed_details.get('memo'),
+                    category_name=parsed_details.get('category_name'),
+                    cleared='uncleared',
+                    approved=False,
+                    account_id=''
+                )
+                
+                return transaction.dict(exclude_unset=True)
+                
+            except ValidationError as ve:
+                raise InvalidGeminiResponseError(f"Invalid transaction data: {ve}")
+            
+        except GeminiHallucinationError as he:
+            self.logger.error(f"Failed to parse transaction due to hallucination: {he}")
+            return {
+                'error': 'hallucination_detected',
+                'message': str(he),
+                'original_query': query
+            }
+        except InvalidGeminiResponseError as ie:
+            self.logger.error(f"Invalid transaction parsing response: {ie}")
+            return {
+                'error': 'invalid_response',
+                'message': str(ie),
+                'original_query': query
+            }
         except Exception as e:
-            self.logger.error("Transaction parsing failed: %s", str(e))
-            raise ValueError(f"Failed to process transaction: {e}")
+            self.logger.error(f"Transaction parsing failed: {e}")
+            raise
 
     @CircuitBreaker()
     def update_transaction_category(self, transaction_id: str, category_name: str, budget_id: Optional[str] = None) -> Dict:
@@ -737,44 +659,15 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
             Dict with update result
         """
         try:
-            # Get YNAB categories
-            categories = self.ynab_client._get_budget_categories(budget_id)
-            
-            # Find category ID by name
-            category_id = None
-            for variation, cat_info in categories.items():
-                if cat_info['name'].lower() == category_name.lower():
-                    category_id = cat_info['id']
-                    break
-            
-            if not category_id:
-                raise ValueError(f"Category '{category_name}' not found")
-            
-            # Update transaction with new category
-            response = requests.patch(
-                f"{self.ynab_client.base_url}/budgets/{budget_id or self.ynab_client.budget_id}/transactions/{transaction_id}",
-                headers=self.ynab_client.headers,
-                json={
-                    'transaction': {
-                        'category_id': category_id
-                    }
-                }
+            # Use YNABClient to update the transaction category
+            return self.ynab_client.update_transaction_categories(
+                budget_id=budget_id,
+                transactions=[{
+                    'id': transaction_id,
+                    'category_name': category_name
+                }]
             )
-            response.raise_for_status()
             
-            updated_transaction = response.json()['data']['transaction']
-            return {
-                'status': 'success',
-                'message': 'Category updated successfully',
-                'transaction': updated_transaction
-            }
-            
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"Failed to update transaction category: {e}")
-            return {
-                'status': 'error',
-                'message': f'Failed to update category: {str(e)}'
-            }
         except Exception as e:
             self.logger.error(f"Error updating transaction category: {e}")
             return {

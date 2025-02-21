@@ -1,0 +1,22 @@
+---
+description: Validate data passed from the GeminiSpendingAnalyzer to the YNABClient to ensure type correctness, required fields, and correct data formats. Direct pass-through of analyzer results leads to invalid transactions.
+globs: **/*BaseAgent.py
+rule_name: Data Flow Validation
+---
+{
+  "implementation_guidelines": [
+    "Define a schema for valid transaction data using a library like Marshmallow or Pydantic.",
+    "Validate the data returned by the `GeminiSpendingAnalyzer` against the schema.",
+    "Raise an exception (e.g., `InvalidAnalysisError`) if the data is invalid.",
+    "Log invalid data for debugging purposes.",
+    "Sanitize the data before passing it to the `YNABClient`."
+  ],
+  "code_example": "class BaseAgent:\n    def execute(self, query):\n        parsed = self.analyzer.parse(query)\n        if not TransactionSchema.validate(parsed):\n            raise InvalidAnalysisError\n        self.ynab_client.create_transaction(parsed)",
+  "best_practices": [
+    "Use a consistent pattern for validating data.",
+    "Provide informative error messages to the user.",
+    "Consider using a contract testing framework to ensure compatibility between components.",
+    "Update the schema as needed to reflect changes in the `GeminiSpendingAnalyzer` output."
+  ],
+  "dependencies": []
+}

@@ -5,6 +5,7 @@ from .gemini_analyzer import GeminiSpendingAnalyzer
 from .ai_modules.semantic_matcher import GeminiSemanticMatcher
 from .ai_modules.spending_pattern_module import SpendingPatternAnalyzer
 from .base_agent import BaseAgent
+from .credentials import CredentialsManager
 
 class Container(containers.DeclarativeContainer):
     """
@@ -14,17 +15,24 @@ class Container(containers.DeclarativeContainer):
     # Core configuration
     config = providers.Singleton(ConfigManager)
     
-    # YNAB client with config dependency
+    # Credentials management
+    credentials_manager = providers.Singleton(
+        CredentialsManager
+    )
+    
+    # YNAB client with credentials dependency
     ynab_client = providers.Singleton(
         YNABClient,
-        config=config
+        personal_token=credentials_manager.provided.get_ynab_token,
+        budget_id=credentials_manager.provided.get_ynab_budget_id
     )
     
     # Gemini analyzer with dependencies
     gemini_analyzer = providers.Singleton(
         GeminiSpendingAnalyzer,
         config_manager=config,
-        ynab_client=ynab_client
+        ynab_client=ynab_client,
+        api_key=credentials_manager.provided.get_gemini_api_key
     )
     
     # Base agent with all dependencies
@@ -38,7 +46,8 @@ class Container(containers.DeclarativeContainer):
     
     semantic_matcher = providers.Factory(
         GeminiSemanticMatcher,
-        config_manager=config
+        config_manager=config,
+        api_key=credentials_manager.provided.get_gemini_api_key
     )
     
     spending_pattern_analyzer = providers.Factory(
