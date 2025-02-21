@@ -1,0 +1,18 @@
+---
+description: Incorporate contextual information, such as past transactions and user preferences, to improve transaction categorization accuracy.
+globs: ai_modules/transaction_categorizer.py, core/gemini_analyzer.py, core/shared_models.py
+rule_name: Utilize Contextual Understanding for Transaction Categorization
+---
+{
+  "implementation_guidelines": [
+    "Store transaction history and user preferences in the conversation context.",
+    "Use this information to refine the categorization process.",
+    "For example, prioritize the most frequently used category for a specific merchant."
+  ],
+  "code_example": "",
+  "best_practices": [
+    "Respect user privacy when collecting and storing user preferences.",
+    "Implement a mechanism for users to manage their transaction history and preferences."
+  ],
+  "dependencies": []
+}

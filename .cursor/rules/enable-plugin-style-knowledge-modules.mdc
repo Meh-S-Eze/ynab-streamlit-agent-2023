@@ -1,0 +1,21 @@
+---
+description: Implement a plugin-style architecture for knowledge modules to facilitate the easy addition of new conversation capabilities and knowledge domains.
+globs: ai_modules/__init__.py, core/base_agent.py, docs/plugin_development.md
+rule_name: Enable Plugin-Style Knowledge Modules
+---
+{
+  "implementation_guidelines": [
+    "Define a clear interface for knowledge modules.",
+    "Implement a knowledge module registry to manage available modules.",
+    "Allow modules to be loaded dynamically at runtime.",
+    "Provide documentation for developers on how to create and integrate new modules."
+  ],
+  "code_example": "",
+  "best_practices": [
+    "Use a standard packaging format (e.g., Python packages) for knowledge modules.",
+    "Implement versioning for knowledge modules to ensure compatibility."
+  ],
+  "dependencies": [
+    "Generalized Intent Detection"
+  ]
+}

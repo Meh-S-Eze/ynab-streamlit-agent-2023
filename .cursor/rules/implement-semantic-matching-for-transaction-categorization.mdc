@@ -1,0 +1,18 @@
+---
+description: Use semantic matching techniques to categorize transactions based on their descriptions and context.
+globs: ai_modules/transaction_categorizer.py, core/gemini_analyzer.py, core/shared_models.py
+rule_name: Implement Semantic Matching for Transaction Categorization
+---
+{
+  "implementation_guidelines": [
+    "Use word embeddings or other semantic representations of transaction descriptions.",
+    "Compare the semantic similarity between transaction descriptions and category labels.",
+    "Use a threshold to determine whether a transaction matches a category."
+  ],
+  "code_example": "",
+  "best_practices": [
+    "Use a pre-trained word embedding model (e.g., Word2Vec, GloVe, FastText).",
+    "Fine-tune the word embedding model on financial transaction data."
+  ],
+  "dependencies": []
+}

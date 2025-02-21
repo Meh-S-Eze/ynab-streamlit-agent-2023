@@ -1,0 +1,18 @@
+---
+description: Cache API responses and intermediate results to minimize API calls and improve performance.
+globs: core/circuit_breaker.py, core/agent_tool_tracker.py
+rule_name: Implement Intelligent Caching
+---
+{
+  "implementation_guidelines": [
+    "Use a caching library (e.g., `cachetools`, `Redis`) to store cached data.",
+    "Invalidate the cache when data changes.",
+    "Use a time-to-live (TTL) to expire cached data after a certain period of time."
+  ],
+  "code_example": "",
+  "best_practices": [
+    "Use a distributed cache for scalability.",
+    "Monitor cache hit rate and adjust the cache size and TTL as needed."
+  ],
+  "dependencies": []
+}

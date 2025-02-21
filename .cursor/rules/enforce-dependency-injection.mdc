@@ -1,0 +1,18 @@
+---
+description: Use dependency injection as a core design principle to improve code modularity and testability.
+globs: core/*.py, ai_modules/*.py, streamlit/*.py
+rule_name: Enforce Dependency Injection
+---
+{
+  "implementation_guidelines": [
+    "Use a dependency injection framework (e.g., `injector`, `dependency_injector`) or manual constructor injection.",
+    "Avoid hardcoding dependencies within classes and functions.",
+    "Define interfaces for all components to facilitate mocking and testing."
+  ],
+  "code_example": "",
+  "best_practices": [
+    "Use abstract base classes or interfaces to define component contracts.",
+    "Configure the dependency injection container in a central location."
+  ],
+  "dependencies": []
+}

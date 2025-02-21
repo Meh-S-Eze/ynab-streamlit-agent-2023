@@ -1,0 +1,18 @@
+---
+description: Assign confidence scores to transaction categorization predictions to indicate the certainty of the prediction.
+globs: ai_modules/transaction_categorizer.py, core/gemini_analyzer.py, core/shared_models.py
+rule_name: Implement Confidence Scoring for Transaction Categorization
+---
+{
+  "implementation_guidelines": [
+    "Use a probabilistic model or a confidence estimation technique to assign confidence scores.",
+    "Use a threshold to filter out low-confidence predictions.",
+    "Provide a mechanism for users to override low-confidence predictions."
+  ],
+  "code_example": "",
+  "best_practices": [
+    "Calibrate the confidence scores to ensure they are well-aligned with prediction accuracy.",
+    "Use a combination of semantic matching and confidence scoring to improve transaction categorization accuracy."
+  ],
+  "dependencies": []
+}

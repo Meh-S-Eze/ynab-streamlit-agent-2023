@@ -1,0 +1,22 @@
+---
+description: Enable seamless contextual switching between conversational mode and task-specific mode, maintaining conversation history and context across mode changes.
+globs: core/state_manager.py, core/base_agent.py
+rule_name: Support Contextual Switching Between Conversation and Task-Specific Modes
+---
+{
+  "implementation_guidelines": [
+    "Store the current interaction mode in the conversation context.",
+    "Implement logic to switch between modes based on user input and context.",
+    "Ensure that conversation history is preserved when switching modes.",
+    "Allow users to explicitly switch modes or infer the mode based on the detected intent."
+  ],
+  "code_example": "",
+  "best_practices": [
+    "Provide visual cues to the user indicating the current interaction mode.",
+    "Implement a mechanism for reverting to conversational mode from task-specific mode."
+  ],
+  "dependencies": [
+    "Stateful Conversation Context Management",
+    "Generalized Intent Detection"
+  ]
+}

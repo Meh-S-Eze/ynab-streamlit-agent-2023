@@ -1,0 +1,21 @@
+---
+description: Evolve the finance-specific analyzer to handle generalized conversational AI use cases, creating a more flexible and context-aware conversation management system.  This includes handling multi-topic conversations.
+globs: core/gemini_analyzer.py
+rule_name: Enable Generalized Conversational AI in Core Gemini Analyzer
+---
+{
+  "implementation_guidelines": [
+    "Refactor the Gemini analyzer to handle diverse conversation topics beyond finance.",
+    "Implement context-aware conversation management within the analyzer.",
+    "Support dynamic topic switching based on user input and conversation history."
+  ],
+  "code_example": "",
+  "best_practices": [
+    "Use dependency injection to enable easy swapping of analyzer components.",
+    "Design the analyzer to be stateless where possible to improve scalability."
+  ],
+  "dependencies": [
+    "Stateful Conversation Context Management",
+    "Generalized Intent Detection"
+  ]
+}
