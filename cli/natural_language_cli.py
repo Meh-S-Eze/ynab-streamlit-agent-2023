@@ -40,14 +40,14 @@ def process(query: str):
     try:
         # Initialize dependencies through container
         container = Container()
-        agent = container.get(BaseAgent)
+        agent = container.base_agent()
         
         # Process the query through the agent
         result = agent.process_query(query)
         
         # Format and display the result
         print("\n🤖 Financial Assistant Response:\n")
-        if result.get('status') == 'error':
+        if isinstance(result, dict) and result.get('status') == 'error':
             logger.error(f"Error: {result.get('message', 'Unknown error')}")
             print(f"Error: {result}")
         else:

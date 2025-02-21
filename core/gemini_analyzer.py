@@ -13,7 +13,7 @@ import re
 from datetime import date, datetime
 from decimal import Decimal
 import requests
-from .shared_models import TransactionCreate, TransactionAmount
+from .shared_models import TransactionCreate, TransactionAmount, Transaction, ConfidenceResult, SpendingAnalysis
 from .data_validation import DataValidator
 
 @runtime_checkable
@@ -826,4 +826,142 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
             return {
                 'status': 'error',
                 'message': f'Failed to process request: {str(e)}'
-            } 
+            }
+
+    def _create_transaction_prompt(self, query: str) -> str:
+        """
+        Create a structured prompt for transaction parsing
+        
+        Args:
+            query (str): Natural language query about transaction creation
+        
+        Returns:
+            str: Structured prompt for Gemini
+        """
+        return f"""
+        You are a financial transaction assistant. Extract transaction details from this query:
+        "{query}"
+        
+        CRITICAL RULES:
+        1. Extract amount:
+           - Look for dollar amounts (e.g., $50, 50 dollars)
+           - Convert to float
+           - Determine if it's an outflow (expense) or inflow (income)
+        2. Extract date:
+           - Default to today if not specified
+           - Convert to YYYY-MM-DD format
+        3. Extract payee/merchant:
+           - Look for business names
+           - Clean and standardize the name
+        4. Extract category:
+           - Look for expense categories (e.g., groceries, dining)
+           - Use common category names
+        5. Extract memo/note:
+           - Look for additional context or description
+           - Clean and format the text
+        
+        Return ONLY a JSON object with these fields:
+        {{
+            "amount": float,  # Positive for inflow, negative for outflow
+            "date": "YYYY-MM-DD",
+            "payee_name": "string",
+            "category_name": "string",  # Optional
+            "memo": "string",  # Optional
+            "is_outflow": true/false  # Whether this is an expense
+        }}
+        
+        Example 1:
+        Input: "Create a transaction for $50 at Walmart for groceries"
+        Output:
+        {{
+            "amount": -50.00,
+            "date": "2024-03-14",
+            "payee_name": "Walmart",
+            "category_name": "Groceries",
+            "memo": "Grocery shopping at Walmart",
+            "is_outflow": true
+        }}
+        
+        Example 2:
+        Input: "Add $100 income from freelance work yesterday"
+        Output:
+        {{
+            "amount": 100.00,
+            "date": "2024-03-13",
+            "payee_name": "Freelance Income",
+            "category_name": "Income",
+            "memo": "Freelance work payment",
+            "is_outflow": false
+        }}
+        
+        IMPORTANT: Return ONLY the JSON object, no additional text or explanation.
+        """
+
+    def parse_transaction(self, description: str) -> TransactionCreate:
+        """
+        Parse a natural language description into a TransactionCreate object
+        
+        Args:
+            description (str): Natural language description of the transaction
+            
+        Returns:
+            TransactionCreate: Parsed transaction object
+        """
+        try:
+            # Generate structured transaction data
+            prompt = f"""
+            Parse this transaction description into a structured format.
+            Description: "{description}"
+            
+            CRITICAL RESPONSE REQUIREMENTS:
+            1. MUST respond ONLY in VALID JSON format
+            2. Create a SINGLE JSON OBJECT with these EXACT keys:
+               - "amount": Decimal number (positive for inflow, negative for outflow)
+               - "payee_name": Name of payee/merchant
+               - "category": Suggested spending category
+               - "memo": Optional transaction memo/note
+               
+            EXAMPLE RESPONSE:
+            {{
+                "amount": -50.00,
+                "payee_name": "Walmart",
+                "category": "Groceries",
+                "memo": "Weekly grocery shopping"
+            }}
+            
+            CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
+            """
+            
+            response = self.model.generate_content(
+                prompt,
+                generation_config={
+                    'temperature': 0.1,
+                    'max_output_tokens': 1024
+                }
+            )
+            
+            # Parse and validate response
+            parsed_data = self._validate_gemini_response(
+                response.text,
+                ['amount', 'payee_name', 'category']
+            )
+            
+            # Get first account ID from YNAB client
+            accounts = self.ynab_client.get_accounts()
+            if not accounts:
+                raise ValueError("No accounts found")
+            account_id = accounts[0]['id']
+            
+            # Create TransactionCreate object
+            return TransactionCreate(
+                account_id=account_id,
+                date=date.today(),
+                amount=parsed_data['amount'],
+                payee_name=parsed_data['payee_name'],
+                memo=parsed_data.get('memo'),
+                category_name=parsed_data['category']
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to parse transaction: {e}")
+            raise 

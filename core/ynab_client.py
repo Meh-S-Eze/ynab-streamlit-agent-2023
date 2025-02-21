@@ -11,30 +11,27 @@ from .data_validation import DataValidator
 from .date_utils import DateFormatter
 
 class YNABClient:
-    def __init__(self, personal_token: str = None):
+    def __init__(self, personal_token: str = None, budget_id: str = None):
         """
         Initialize YNAB client
         
         Args:
             personal_token (str, optional): YNAB API token. If not provided, uses YNAB_API_KEY from .env
+            budget_id (str, optional): YNAB budget ID. If not provided, uses YNAB_BUDGET_ID from .env
         """
         self.logger = logging.getLogger(__name__)
         
-        # Prioritize passed personal_token, then .env, then config
-        self.personal_token = (
-            personal_token or 
-            os.getenv('YNAB_API_KEY') or 
-            ConfigManager.get('credentials.ynab.api_key')
-        )
+        # Always try environment variables first
+        env_token = os.getenv('YNAB_API_KEY')
+        env_budget_id = os.getenv('YNAB_BUDGET_ID')
         
-        # Validate personal token
+        # Use provided values as fallback
+        self.personal_token = env_token or personal_token
+        self.budget_id = env_budget_id or budget_id
+        
+        # Validate credentials
         if not self.personal_token:
             raise ValueError("No YNAB API token found. Please set YNAB_API_KEY in .env or provide a token.")
-        
-        # Always use YNAB_BUDGET_ID from .env
-        self.budget_id = os.getenv('YNAB_BUDGET_ID')
-        
-        # Validate budget ID
         if not self.budget_id:
             raise ValueError("No YNAB Budget ID found. Please set YNAB_BUDGET_ID in .env.")
         

@@ -386,34 +386,26 @@ class BaseAgent:
             if intent_data['intent'] == 'create_transaction':
                 # Try to parse as a transaction creation request
                 try:
-                    transaction_details = self.gemini_analyzer.parse_transaction_creation(query)
-                    if transaction_details:
-                        # Get the first account from YNAB if not specified
-                        if not transaction_details.get('account_id'):
-                            accounts = self.ynab_client.get_accounts()
-                            if accounts:
-                                transaction_details['account_id'] = accounts[0]['id']
-                        
-                        # Create the transaction
-                        result = self.ynab_client.create_transaction(
-                            transaction=transaction_details
-                        )
-                        
-                        if result['status'] == 'success':
-                            return {
-                                'summary': f"Successfully created transaction: {result['message']}",
-                                'transaction': result['details']
-                            }
-                        else:
-                            return {
-                                'summary': f"Failed to create transaction: {result['message']}",
-                                'error': result.get('details', {})
-                            }
+                    transaction = self.gemini_analyzer.parse_transaction(query)
+                    
+                    # Create the transaction
+                    result = self.ynab_client.create_transaction(transaction)
+                    
+                    if result['status'] == 'success':
+                        return {
+                            'summary': f"Successfully created transaction: {result['message']}",
+                            'transaction': result['details']
+                        }
+                    else:
+                        return {
+                            'summary': f"Failed to create transaction: {result['message']}",
+                            'error': result.get('details', {})
+                        }
                 except Exception as e:
                     self.logger.error(f"Transaction creation failed: {e}")
                     return {
-                        'status': 'error',
-                        'message': f'Failed to create transaction: {str(e)}'
+                        'summary': f"Failed to create transaction: {str(e)}",
+                        'error': {}
                     }
                     
             elif intent_data['intent'] == 'update_category':

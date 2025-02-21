@@ -23,16 +23,15 @@ class Container(containers.DeclarativeContainer):
     # YNAB client with credentials dependency
     ynab_client = providers.Singleton(
         YNABClient,
-        personal_token=credentials_manager.provided.get_ynab_token,
-        budget_id=credentials_manager.provided.get_ynab_budget_id
+        personal_token=credentials_manager.provided.get_ynab_token.call(),
+        budget_id=credentials_manager.provided.get_ynab_budget_id.call()
     )
     
     # Gemini analyzer with dependencies
     gemini_analyzer = providers.Singleton(
         GeminiSpendingAnalyzer,
         config_manager=config,
-        ynab_client=ynab_client,
-        api_key=credentials_manager.provided.get_gemini_api_key
+        ynab_client=ynab_client
     )
     
     # Base agent with all dependencies
@@ -46,8 +45,7 @@ class Container(containers.DeclarativeContainer):
     
     semantic_matcher = providers.Factory(
         GeminiSemanticMatcher,
-        config_manager=config,
-        api_key=credentials_manager.provided.get_gemini_api_key
+        config_manager=config
     )
     
     spending_pattern_analyzer = providers.Factory(

@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union
 from datetime import datetime, date
 import logging
 from decimal import Decimal
