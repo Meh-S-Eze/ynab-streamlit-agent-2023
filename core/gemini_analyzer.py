@@ -1,20 +1,31 @@
+import os
+import re
+import json
+import logging
+from typing import List, Dict, Optional, Union
+from decimal import Decimal
+from datetime import datetime, date
+
 import google.generativeai as genai
-from typing import Dict, List, Optional, Protocol, runtime_checkable, Union
+from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockThreshold
+
 from .config import ConfigManager
 from .circuit_breaker import CircuitBreaker
 from .ynab_client import YNABClient
 from pydantic import BaseModel, ValidationError, Field, validator
-import logging
-import json
 import importlib
 import sys
-import os
-import re
-from datetime import date, datetime
-from decimal import Decimal
-import requests
-from .shared_models import TransactionCreate, TransactionAmount, Transaction, ConfidenceResult, SpendingAnalysis
+from .shared_models import (
+    TransactionCreate, 
+    TransactionAmount, 
+    Transaction, 
+    ConfidenceResult, 
+    SpendingAnalysis,
+    AmountFromAI,
+    AISource
+)
 from .data_validation import DataValidator
+from typing_extensions import runtime_checkable, Protocol
 
 @runtime_checkable
 class AnalysisModule(Protocol):
@@ -99,27 +110,66 @@ class GeminiSpendingAnalyzer:
     """
     Enhanced spending analyzer with plugin support and confidence scoring
     """
-    def __init__(self, config_manager: Optional[ConfigManager] = None, ynab_client: Optional[YNABClient] = None):
+    def __init__(
+        self, 
+        config_manager: Optional[ConfigManager] = None, 
+        ynab_client: Optional[YNABClient] = None
+    ):
         """
-        Initialize analyzer with dependency injection
+        Initialize Gemini Spending Analyzer with advanced configuration
         
         Args:
-            config_manager (Optional[ConfigManager]): Configuration manager
-            ynab_client (Optional[YNABClient]): YNAB client for API operations
+            config_manager (Optional[ConfigManager]): Configuration management
+            ynab_client (Optional[YNABClient]): YNAB client for context
         """
-        self.config = config_manager or ConfigManager()
+        # Configure logging
         self.logger = logging.getLogger(__name__)
         
-        # Store YNAB client
-        self.ynab_client = ynab_client
+        # Load configuration
+        self.config = config_manager or ConfigManager()
         
-        # Plugin management
-        self.analysis_modules: List[AnalysisModule] = []
-        self._discover_plugins()
-        
-        # Configure Gemini model
-        genai.configure(api_key=self.config.get('credentials.gemini.api_key'))
-        self.model = genai.GenerativeModel('gemini-pro')
+        # Initialize Gemini client with enhanced safety and performance settings
+        try:
+            import google.generativeai as genai
+            
+            # Set up API key from environment or config
+            api_key = os.getenv('GEMINI_API_KEY')
+            if not api_key:
+                raise ValueError("No Gemini API key found. Please set GEMINI_API_KEY.")
+            
+            genai.configure(api_key=api_key)
+            
+            # Initialize model with advanced configuration
+            self.model = genai.GenerativeModel(
+                'gemini-pro',  # Latest general-purpose model
+                generation_config=genai.types.GenerationConfig(
+                    # Precise configuration for financial analysis
+                    temperature=0.1,  # Low randomness for consistent results
+                    top_p=0.9,  # Focus on most probable tokens
+                    top_k=40,  # Consider top 40 tokens
+                    max_output_tokens=2048,  # Sufficient for complex responses
+                ),
+                safety_settings={
+                    # Strict safety settings for financial data
+                    genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: genai.types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
+                }
+            )
+            
+            # Optional: YNAB client for additional context
+            self.ynab_client = ynab_client
+            
+            # Discover and register analysis plugins
+            self._discover_plugins()
+            
+        except ImportError as e:
+            self.logger.error(f"Failed to import Gemini AI library: {e}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to initialize Gemini analyzer: {e}")
+            raise
 
     def _discover_plugins(self):
         """
@@ -249,20 +299,52 @@ class GeminiSpendingAnalyzer:
         try:
             # Clean response text
             clean_text = response_text.strip()
-            if '```' in clean_text:
-                clean_text = re.search(r'```(?:json)?\n?(.*?)\n?```', clean_text, re.DOTALL).group(1)
             
-            # Try to parse JSON
-            try:
-                parsed_data = json.loads(clean_text)
-            except json.JSONDecodeError as e:
-                raise InvalidGeminiResponseError(f"Failed to parse JSON response: {e}")
+            # Log raw response for debugging
+            self.logger.debug(f"Raw response text: {clean_text}")
+            
+            # Multiple strategies for JSON extraction
+            json_extraction_patterns = [
+                # Markdown code block with optional json hint
+                r'```(?:json)?\n?(.*?)\n?```',
+                # JSON between curly braces
+                r'\{.*\}',
+                # JSON-like text between first { and last }
+                r'\{.*\}(?=\s*$)',
+            ]
+            
+            parsed_data = None
+            for pattern in json_extraction_patterns:
+                try:
+                    match = re.search(pattern, clean_text, re.DOTALL | re.MULTILINE)
+                    if match:
+                        candidate_text = match.group(0).strip()
+                        
+                        # Log candidate text for debugging
+                        self.logger.debug(f"Candidate JSON text: {candidate_text}")
+                        
+                        try:
+                            parsed_data = json.loads(candidate_text)
+                            break  # Stop if successful parsing
+                        except json.JSONDecodeError:
+                            # Continue to next pattern if parsing fails
+                            continue
+                except Exception as e:
+                    self.logger.warning(f"JSON extraction failed for pattern {pattern}: {e}")
+            
+            # If no valid JSON found
+            if parsed_data is None:
+                self.logger.error(f"Could not extract valid JSON from response: {clean_text}")
+                raise InvalidGeminiResponseError("No valid JSON found in response")
+            
+            # Log parsed data
+            self.logger.debug(f"Parsed data: {parsed_data}")
             
             # Check for hallucination indicators
             if isinstance(parsed_data, dict):
                 # Check for nonsensical values
                 for key, value in parsed_data.items():
-                    if isinstance(value, (int, float)) and value > 1e6:  # Unreasonably large numbers
+                    if isinstance(value, (int, float)) and abs(value) > 1e6:  # Unreasonably large numbers
                         raise GeminiHallucinationError(f"Unreasonable value detected: {key}={value}")
                     if isinstance(value, str) and len(value) > 1000:  # Extremely long strings
                         raise GeminiHallucinationError(f"Unreasonably long string detected for {key}")
@@ -275,6 +357,8 @@ class GeminiSpendingAnalyzer:
             return parsed_data
             
         except (AttributeError, TypeError) as e:
+            self.logger.error(f"Response structure error: {e}")
+            self.logger.error(f"Problematic response: {response_text}")
             raise InvalidGeminiResponseError(f"Invalid response structure: {e}")
 
     @CircuitBreaker()
@@ -830,138 +914,123 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
 
     def _create_transaction_prompt(self, query: str) -> str:
         """
-        Create a structured prompt for transaction parsing
+        Create a structured prompt for transaction parsing with enhanced guidance
         
         Args:
-            query (str): Natural language query about transaction creation
+            query (str): Natural language transaction description
         
         Returns:
-            str: Structured prompt for Gemini
+            str: Structured prompt for Gemini Pro
         """
         return f"""
-        You are a financial transaction assistant. Extract transaction details from this query:
+        Parse the following transaction description into a precise JSON format:
         "{query}"
         
-        CRITICAL RULES:
-        1. Extract amount:
-           - Look for dollar amounts (e.g., $50, 50 dollars)
-           - Convert to float
-           - Determine if it's an outflow (expense) or inflow (income)
-        2. Extract date:
-           - Default to today if not specified
-           - Convert to YYYY-MM-DD format
-        3. Extract payee/merchant:
-           - Look for business names
-           - Clean and standardize the name
-        4. Extract category:
-           - Look for expense categories (e.g., groceries, dining)
-           - Use common category names
-        5. Extract memo/note:
-           - Look for additional context or description
-           - Clean and format the text
+        CRITICAL REQUIREMENTS:
+        1. RESPOND ONLY WITH VALID JSON
+        2. NO COMMENTS, NO EXTRA TEXT
+        3. USE EXACT KEYS: amount, payee_name, category, memo, is_outflow, confidence
+        4. amount MUST be a non-null number with currency
+        5. is_outflow MUST be true or false
+        6. confidence MUST be a float between 0 and 1
         
-        Return ONLY a JSON object with these fields:
+        VALID JSON FORMAT:
         {{
-            "amount": float,  # Positive for inflow, negative for outflow
-            "date": "YYYY-MM-DD",
-            "payee_name": "string",
-            "category_name": "string",  # Optional
-            "memo": "string",  # Optional
-            "is_outflow": true/false  # Whether this is an expense
+            "amount": {{
+                "value": 50.00,
+                "currency": "USD"
+            }},
+            "payee_name": "Target",
+            "category": "Household Supplies",
+            "memo": "Household essentials",
+            "is_outflow": true,
+            "confidence": 0.85
         }}
         
-        Example 1:
-        Input: "Create a transaction for $50 at Walmart for groceries"
-        Output:
-        {{
-            "amount": -50.00,
-            "date": "2024-03-14",
-            "payee_name": "Walmart",
-            "category_name": "Groceries",
-            "memo": "Grocery shopping at Walmart",
-            "is_outflow": true
-        }}
-        
-        Example 2:
-        Input: "Add $100 income from freelance work yesterday"
-        Output:
-        {{
-            "amount": 100.00,
-            "date": "2024-03-13",
-            "payee_name": "Freelance Income",
-            "category_name": "Income",
-            "memo": "Freelance work payment",
-            "is_outflow": false
-        }}
-        
-        IMPORTANT: Return ONLY the JSON object, no additional text or explanation.
+        If you CANNOT parse the description, return an error JSON.
         """
 
-    def parse_transaction(self, description: str) -> TransactionCreate:
+    def parse_transaction(self, transaction_description: str) -> TransactionCreate:
         """
-        Parse a natural language description into a TransactionCreate object
+        Parse a natural language transaction description into a TransactionCreate object.
         
         Args:
-            description (str): Natural language description of the transaction
-            
+            transaction_description (str): Natural language description of the transaction
+        
         Returns:
-            TransactionCreate: Parsed transaction object
+            TransactionCreate: A validated transaction object
+        
+        Raises:
+            InvalidGeminiResponseError: If the transaction cannot be parsed
+            GeminiHallucinationError: If the response appears to be a hallucination
         """
         try:
-            # Generate structured transaction data
-            prompt = f"""
-            Parse this transaction description into a structured format.
-            Description: "{description}"
-            
-            CRITICAL RESPONSE REQUIREMENTS:
-            1. MUST respond ONLY in VALID JSON format
-            2. Create a SINGLE JSON OBJECT with these EXACT keys:
-               - "amount": Decimal number (positive for inflow, negative for outflow)
-               - "payee_name": Name of payee/merchant
-               - "category": Suggested spending category
-               - "memo": Optional transaction memo/note
-               
-            EXAMPLE RESPONSE:
-            {{
-                "amount": -50.00,
-                "payee_name": "Walmart",
-                "category": "Groceries",
-                "memo": "Weekly grocery shopping"
-            }}
-            
-            CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
-            """
-            
+            # Generate transaction data from Gemini Pro
             response = self.model.generate_content(
-                prompt,
-                generation_config={
-                    'temperature': 0.1,
-                    'max_output_tokens': 1024
-                }
+                self._create_transaction_prompt(transaction_description),
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.1,  # Low temperature for consistent output
+                    max_output_tokens=256  # Limit output size
+                )
             )
             
-            # Parse and validate response
-            parsed_data = self._validate_gemini_response(
-                response.text,
-                ['amount', 'payee_name', 'category']
-            )
+            # Log the raw response for debugging
+            self.logger.debug(f"Raw Gemini response for transaction parsing: {response.text}")
             
-            # Get first account ID from YNAB client
-            accounts = self.ynab_client.get_accounts()
-            if not accounts:
-                raise ValueError("No accounts found")
-            account_id = accounts[0]['id']
+            # Validate the response
+            try:
+                parsed_data = self._validate_gemini_response(
+                    response.text, 
+                    expected_fields=[
+                        "amount", "payee_name", "category", 
+                        "memo", "is_outflow", "confidence"
+                    ]
+                )
+            except (InvalidGeminiResponseError, GeminiHallucinationError) as validation_error:
+                self.logger.error(f"Transaction parsing validation error: {validation_error}")
+                self.logger.error(f"Problematic response text: {response.text}")
+                raise
             
-            # Create TransactionCreate object
+            # Extract amount details with robust error handling
+            try:
+                amount_data = parsed_data.get('amount', {})
+                if not isinstance(amount_data, dict):
+                    raise ValueError("Amount must be a dictionary")
+                
+                # Ensure 'value' exists and is a valid number
+                amount_value = amount_data.get('value')
+                if amount_value is None:
+                    raise ValueError("Amount 'value' is missing")
+                
+                # Convert to Decimal for precise handling
+                try:
+                    amount_decimal = Decimal(str(amount_value))
+                except (TypeError, ValueError) as e:
+                    raise ValueError(f"Invalid amount value: {amount_value}. Error: {e}")
+                
+                # Create AmountFromAI instance
+                amount = AmountFromAI(
+                    value=amount_decimal,
+                    currency=amount_data.get('currency', 'USD'),
+                    source=AISource.GEMINI,
+                    is_outflow=parsed_data.get('is_outflow', True),
+                    confidence=parsed_data.get('confidence', 0.7)
+                )
+            except (KeyError, ValueError) as e:
+                self.logger.error(f"Error processing amount: {e}")
+                self.logger.error(f"Problematic amount data: {amount_data}")
+                raise InvalidGeminiResponseError(f"Invalid amount format: {e}")
+            
+            # Create and return TransactionCreate object
             return TransactionCreate(
-                account_id=account_id,
-                date=date.today(),
-                amount=parsed_data['amount'],
+                account_id=self.ynab_client.get_first_account_id(),
+                date=datetime.now().date(),
+                amount=amount,
                 payee_name=parsed_data['payee_name'],
-                memo=parsed_data.get('memo'),
-                category_name=parsed_data['category']
+                category_name=parsed_data['category'],
+                memo=parsed_data.get('memo', '')
             )
-            
+        
         except Exception as e:
-            self.logger.error(f"Failed to parse transaction: {e}")
+            self.logger.error(f"Unexpected error in parse_transaction: {e}")
             raise 

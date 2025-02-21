@@ -184,5 +184,13 @@ class ConfigManager:
         logging.getLogger('urllib3').setLevel(logging.WARNING)
         logging.getLogger('httplib2').setLevel(logging.WARNING)
 
+    def get_conversion_rates(self) -> Dict[str, float]:
+        return self._config.get('currency_rates', {
+            "USD": 1.0,
+            "EUR": 0.93,
+            "GBP": 0.80,
+            # Add other rates
+        })
+
 # Initialize logging on import
 ConfigManager().setup_logging() 
