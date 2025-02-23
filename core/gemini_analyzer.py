@@ -923,18 +923,17 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
             str: Structured prompt for Gemini Pro
         """
         return f"""
-        Parse the following transaction description into a precise JSON format:
-        "{query}"
-        
-        CRITICAL REQUIREMENTS:
-        1. RESPOND ONLY WITH VALID JSON
-        2. NO COMMENTS, NO EXTRA TEXT
-        3. USE EXACT KEYS: amount, payee_name, category, memo, is_outflow, confidence
-        4. amount MUST be a non-null number with currency
-        5. is_outflow MUST be true or false
-        6. confidence MUST be a float between 0 and 1
-        
-        VALID JSON FORMAT:
+        PRECISE TRANSACTION PARSING INSTRUCTIONS:
+
+        Transaction Description: "{query}"
+
+        YOU MUST:
+        1. Parse the transaction description EXACTLY
+        2. Provide ONLY a JSON response
+        3. NO additional text or explanation
+        4. MATCH these EXACT keys and types
+
+        JSON TEMPLATE (MUST FOLLOW EXACTLY):
         {{
             "amount": {{
                 "value": 50.00,
@@ -942,12 +941,31 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
             }},
             "payee_name": "Target",
             "category": "Household Supplies",
-            "memo": "Household essentials",
+            "memo": "Household items purchased",
             "is_outflow": true,
             "confidence": 0.85
         }}
-        
-        If you CANNOT parse the description, return an error JSON.
+
+        PARSING RULES:
+        - Extract EXACT numeric amount from description
+        - Use "USD" as default currency
+        - Determine payee from description
+        - Choose most appropriate category
+        - Set is_outflow to true for spending
+        - Estimate confidence between 0 and 1
+
+        EXAMPLE CONVERSIONS:
+        "$50 at Target" → 
+        {{
+            "amount": {{"value": 50.00, "currency": "USD"}},
+            "payee_name": "Target",
+            "category": "Household Supplies",
+            "memo": "Household items",
+            "is_outflow": true,
+            "confidence": 0.9
+        }}
+
+        CRITICAL: RESPOND WITH ONLY THE JSON. NO EXPLANATION.
         """
 
     def parse_transaction(self, transaction_description: str) -> TransactionCreate:
@@ -975,12 +993,26 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
             )
             
             # Log the raw response for debugging
-            self.logger.debug(f"Raw Gemini response for transaction parsing: {response.text}")
+            raw_response_text = response.text.strip()
+            self.logger.debug(f"Raw Gemini response for transaction parsing: {raw_response_text}")
             
-            # Validate the response
+            # Attempt to parse the response as JSON
+            try:
+                # Use json.loads to parse the response
+                import json
+                parsed_data = json.loads(raw_response_text)
+                
+                # Log the parsed JSON for debugging
+                self.logger.debug(f"Parsed JSON data: {parsed_data}")
+            except json.JSONDecodeError as json_error:
+                self.logger.error(f"Failed to parse JSON: {json_error}")
+                self.logger.error(f"Problematic JSON text: {raw_response_text}")
+                raise InvalidGeminiResponseError(f"Invalid JSON format: {json_error}")
+            
+            # Validate the parsed data
             try:
                 parsed_data = self._validate_gemini_response(
-                    response.text, 
+                    raw_response_text, 
                     expected_fields=[
                         "amount", "payee_name", "category", 
                         "memo", "is_outflow", "confidence"
@@ -988,19 +1020,23 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
                 )
             except (InvalidGeminiResponseError, GeminiHallucinationError) as validation_error:
                 self.logger.error(f"Transaction parsing validation error: {validation_error}")
-                self.logger.error(f"Problematic response text: {response.text}")
+                self.logger.error(f"Problematic response text: {raw_response_text}")
                 raise
             
             # Extract amount details with robust error handling
             try:
+                # Ensure amount is a dictionary
                 amount_data = parsed_data.get('amount', {})
                 if not isinstance(amount_data, dict):
-                    raise ValueError("Amount must be a dictionary")
+                    raise ValueError(f"Amount must be a dictionary, got {type(amount_data)}")
+                
+                # Detailed logging of amount data
+                self.logger.debug(f"Amount data received: {amount_data}")
                 
                 # Ensure 'value' exists and is a valid number
                 amount_value = amount_data.get('value')
                 if amount_value is None:
-                    raise ValueError("Amount 'value' is missing")
+                    raise ValueError("Amount 'value' is missing or None")
                 
                 # Convert to Decimal for precise handling
                 try:
@@ -1008,10 +1044,15 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
                 except (TypeError, ValueError) as e:
                     raise ValueError(f"Invalid amount value: {amount_value}. Error: {e}")
                 
+                # Ensure currency is present
+                currency = amount_data.get('currency', 'USD')
+                if not currency:
+                    raise ValueError("Currency is missing or empty")
+                
                 # Create AmountFromAI instance
                 amount = AmountFromAI(
                     value=amount_decimal,
-                    currency=amount_data.get('currency', 'USD'),
+                    currency=currency,
                     source=AISource.GEMINI,
                     is_outflow=parsed_data.get('is_outflow', True),
                     confidence=parsed_data.get('confidence', 0.7)
