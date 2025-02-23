@@ -59,6 +59,7 @@ config.local.yaml
 config.local.json
 
 # Sensitive files
+.env
 *.key
 *.pem
 *.crt 
