@@ -2,22 +2,28 @@ import google.generativeai as genai
 from typing import List, Dict, Optional
 from core.config import ConfigManager
 from core.shared_models import ConfidenceResult, Transaction
+from core.ai_client_factory import AIClientFactory, AIModelRole
+import os
 
 class GeminiSemanticMatcher:
     """
-    Semantic matching using Gemini AI for transaction categorization
+    Semantic matching using AI for transaction categorization
     
     Follows rules:
     - Semantic Matching
     - Contextual Understanding
     - Confidence Scoring
     """
-    def __init__(self, config_manager: Optional[ConfigManager] = None):
+    def __init__(
+        self, 
+        config_manager: Optional[ConfigManager] = None,
+        ai_client_factory: Optional[AIClientFactory] = None
+    ):
         self.config = config_manager or ConfigManager()
         
-        # Configure Gemini
-        genai.configure(api_key=self.config.get('credentials.gemini.api_key'))
-        self.model = genai.GenerativeModel('gemini-pro')
+        # Use the AI client factory for model access
+        # This provides automatic fallback to OpenAI if Gemini fails
+        self.ai_client_factory = ai_client_factory or AIClientFactory()
     
     def categorize_with_semantic_matching(
         self, 
@@ -26,7 +32,7 @@ class GeminiSemanticMatcher:
         transaction_history: List[Transaction] = None
     ) -> ConfidenceResult:
         """
-        Use Gemini to semantically match transaction to categories
+        Use AI to semantically match transaction to categories
         
         Args:
             transaction: Transaction to categorize
@@ -36,7 +42,7 @@ class GeminiSemanticMatcher:
         Returns:
             ConfidenceResult with categorization details
         """
-        # Prepare context-rich prompt for Gemini
+        # Prepare context-rich prompt for AI model
         context_prompt = f"""
         Categorize this financial transaction with high accuracy:
 
@@ -59,19 +65,21 @@ class GeminiSemanticMatcher:
         """
 
         try:
-            # Generate categorization response
-            response = self.model.generate_content(
-                context_prompt,
-                generation_config={
-                    'temperature': 0.2,  # More deterministic
-                    'max_output_tokens': 1024
-                }
+            # Generate categorization response using the AI client factory
+            # This will automatically try the primary provider and fall back if needed
+            response = self.ai_client_factory.generate_content(
+                prompt=context_prompt,
+                role=AIModelRole.REASONING,  # Use reasoning model for better categorization
+                temperature=0.2,  # More deterministic
+                max_tokens=1024
             )
 
-            # Parse Gemini's response
-            parsed_response = self._parse_gemini_categorization(
-                response.text, 
-                existing_categories
+            # Parse AI model response
+            parsed_response = self._parse_ai_categorization(
+                response.content,
+                existing_categories,
+                response.provider,
+                response.model_name
             )
 
             return parsed_response
@@ -84,23 +92,27 @@ class GeminiSemanticMatcher:
                 reasoning=f"Categorization failed: {str(e)}"
             )
     
-    def _parse_gemini_categorization(
+    def _parse_ai_categorization(
         self, 
         response_text: str, 
-        existing_categories: List[Dict]
+        existing_categories: List[Dict],
+        provider: str,
+        model_name: str
     ) -> ConfidenceResult:
         """
-        Parse Gemini's categorization response
+        Parse AI model's categorization response
         
         Args:
-            response_text: Raw text from Gemini
+            response_text: Raw text from AI model
             existing_categories: Available categories
+            provider: The AI provider that generated the response
+            model_name: The model name that generated the response
         
         Returns:
             Parsed ConfidenceResult
         """
         try:
-            # Use Gemini to help parse its own response
+            # Use AI to help parse its own response
             parsing_prompt = f"""
             Parse this categorization response:
             {response_text}
@@ -118,12 +130,11 @@ class GeminiSemanticMatcher:
             - reasoning
             """
 
-            parsing_response = self.model.generate_content(
-                parsing_prompt,
-                generation_config={
-                    'temperature': 0.1,  # Very deterministic
-                    'max_output_tokens': 512
-                }
+            parsing_response = self.ai_client_factory.generate_content(
+                prompt=parsing_prompt,
+                role=AIModelRole.REASONING,  # Using reasoning model for parsing
+                temperature=0.1,  # Very deterministic
+                max_tokens=512
             )
 
             # Additional parsing logic would go here
@@ -131,7 +142,7 @@ class GeminiSemanticMatcher:
             return ConfidenceResult(
                 category='Uncategorized',
                 confidence=0.5,
-                reasoning="Parsing implementation pending"
+                reasoning=f"Parsing implementation pending. Used {provider} model {model_name}"
             )
 
         except Exception as e:

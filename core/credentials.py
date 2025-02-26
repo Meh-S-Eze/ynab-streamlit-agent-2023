@@ -36,7 +36,7 @@ class CredentialsManager:
         # 3. Raise error if not found
         self.credentials = APICredentials(
             ynab_token=ynab_token or os.getenv('YNAB_API_KEY'),
-            ynab_budget_id=ynab_budget_id or os.getenv('YNAB_BUDGET_ID'),
+            ynab_budget_id=ynab_budget_id or os.getenv('YNAB_BUDGET_DEV'),
             gemini_api_key=gemini_api_key or os.getenv('GEMINI_API_KEY')
         )
         

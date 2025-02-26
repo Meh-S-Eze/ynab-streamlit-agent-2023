@@ -6,7 +6,8 @@ from pydantic import (
     Discriminator,
     Tag,
     ConfigDict,
-    ValidationInfo
+    ValidationInfo,
+    PrivateAttr
 )
 from typing import List, Dict, Optional, Union, Annotated, Literal, Any
 from datetime import date, datetime
@@ -72,6 +73,13 @@ class MilliunitConverter:
                 raise ValueError(f"Invalid decimal value: {str(e)}")
             except (OverflowError, ValueError) as e:
                 raise ValueError(f"Conversion error: {str(e)}")
+
+def safe_repr(value: Any) -> str:
+    """Safely represent any value as a string for logging"""
+    try:
+        return repr(value)
+    except Exception:
+        return str(type(value))
 
 class AmountNormalizer:
     """Normalizes various amount input formats with defense-in-depth validation"""
@@ -186,8 +194,8 @@ class TransactionAmount(BaseModel):
     currency: Annotated[str, Field(default="USD", description="Currency code")]
     source_type: Literal["standard"] = "standard"
     
-    _converter: MilliunitConverter = MilliunitConverter()
-    _normalizer: AmountNormalizer = AmountNormalizer()
+    _converter: MilliunitConverter = PrivateAttr(default_factory=MilliunitConverter)
+    _normalizer: AmountNormalizer = PrivateAttr(default_factory=AmountNormalizer)
     
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
@@ -203,14 +211,15 @@ class TransactionAmount(BaseModel):
             # Get validation context
             context = (info.context or {}).copy()
             context["conversion_rates"] = ConfigManager().get_conversion_rates()
-            
-            # Use normalizer with context
-            normalized = cls._normalizer.normalize(value, context)
-            
+
+            # Instantiate a new AmountNormalizer and use it
+            normalizer = AmountNormalizer()
+            normalized = normalizer.normalize(value, context)
+
             # Ensure positive value
             if normalized < 0:
                 normalized = abs(normalized)
-                
+
             return normalized
         except Exception as e:
             raise ValueError(f"Amount validation failed: {str(e)}")
@@ -226,7 +235,9 @@ class TransactionAmount(BaseModel):
     def to_milliunits(self) -> int:
         """Convert to milliunits with error handling"""
         try:
-            milliunits = self._converter.convert(self.amount)
+            # Create a converter instance since we're using PrivateAttr
+            converter = MilliunitConverter()
+            milliunits = converter.convert(self.amount)
             return -milliunits if self.is_outflow else milliunits
         except Exception as e:
             raise ValueError(f"Milliunit conversion failed: {str(e)}")
@@ -262,11 +273,13 @@ class TransactionCreate(BaseModel):
     date: Annotated[date, Field(description="Transaction date")]
     amount: Union[AmountFromAI, TransactionAmount] = Field(description="Transaction amount")
     payee_name: Annotated[Optional[str], Field(None, description="Name of payee/merchant")]
+    payee_id: Annotated[Optional[str], Field(None, description="YNAB payee ID")]
     memo: Annotated[Optional[str], Field(None, description="Transaction memo/note")]
     cleared: Annotated[str, Field(default="uncleared", description="Transaction cleared status")]
     approved: Annotated[bool, Field(default=False, description="Whether transaction is approved")]
     category_id: Annotated[Optional[str], Field(None, description="YNAB category ID")]
     category_name: Annotated[Optional[str], Field(None, description="Category name for lookup")]
+    flag_name: Annotated[Optional[str], Field(None, description="Flag color: red, orange, yellow, green, blue, purple")]
     
     model_config = ConfigDict(
         validate_assignment=True,
@@ -301,6 +314,36 @@ class TransactionCreate(BaseModel):
             })
         except Exception as e:
             raise ValueError(f"Failed to create transaction from AI response: {str(e)}")
+
+    def to_api_format(self) -> Dict[str, Any]:
+        """
+        Convert to YNAB API format with milliunits conversion
+        
+        Returns:
+            Dict formatted for YNAB API
+        """
+        # Convert amount to milliunits
+        milliunits = self.amount.to_milliunits()
+        
+        # Format date as ISO-8601 string
+        date_str = self.date.isoformat() if isinstance(self.date, date) else str(self.date)
+        
+        # Create API payload
+        payload = {
+            "account_id": self.account_id,
+            "date": date_str,
+            "amount": milliunits,
+            "payee_name": self.payee_name,
+            "payee_id": self.payee_id,
+            "memo": self.memo,
+            "cleared": self.cleared,
+            "approved": self.approved,
+            "category_id": self.category_id,
+            "flag_name": self.flag_name
+        }
+        
+        # Remove None values
+        return {k: v for k, v in payload.items() if v is not None}
 
 class TransactionUpdate(BaseModel):
     """Model for updating an existing transaction"""
@@ -359,6 +402,7 @@ class Transaction(BaseModel):
     approved: Annotated[bool, Field(description="Whether transaction is approved")]
     category_id: Annotated[Optional[str], Field(None, description="YNAB category ID")]
     category_name: Annotated[Optional[str], Field(None, description="Category name")]
+    flag_name: Annotated[Optional[str], Field(None, description="Flag color: red, orange, yellow, green, blue, purple")]
     
     @field_validator('cleared')
     def validate_cleared(cls, v):
@@ -391,7 +435,8 @@ class Transaction(BaseModel):
             cleared=data['cleared'],
             approved=data['approved'],
             category_id=data.get('category_id'),
-            category_name=data.get('category_name')
+            category_name=data.get('category_name'),
+            flag_name=data.get('flag_name')
         )
 
 class SpendingAnalysis(BaseModel):

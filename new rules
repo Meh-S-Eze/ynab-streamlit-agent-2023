@@ -1,0 +1,53 @@
+# YNAB API Best Practices Rule
+rule_request_1: |
+  Please create a rule to ensure our YNAB API integration follows best practices for caching and delta requests. 
+  The rule should enforce:
+  - Proper caching of API responses to minimize traffic
+  - Use of delta requests for supported endpoints
+  - Specific endpoint requests instead of broad queries
+  - Clear examples of good and bad caching patterns
+  - Implementation guidelines for both caching and delta requests
+
+# Pydantic AI Integration Rule
+rule_request_2: |
+  Create a rule to ensure proper integration of Pydantic AI in our YNAB client. 
+  The rule should require:
+  - Use of Pydantic models for all data validation
+  - Implementation of dependency injection for services
+  - Type safety throughout the codebase
+  - Python-centric design patterns
+  - Integration with Pydantic Logfire for monitoring
+  - Clear examples of model definitions and validation
+
+# Error Handling Rule
+rule_request_3: |
+  Update our error handling rule to ensure comprehensive error management in our YNAB integration.
+  The rule should cover:
+  - API rate limit handling with retries
+  - Network failure recovery
+  - Validation error handling
+  - User-friendly error messages
+  - Proper logging and monitoring
+  - Examples of both good and bad error handling patterns
+
+# Security and Compliance Rule
+rule_request_4: |
+  Create a rule to ensure our YNAB integration follows all security and compliance requirements.
+  The rule should enforce:
+  - Secure handling of API tokens
+  - Proper OAuth implementation
+  - Compliance with YNAB's terms of service
+  - Protection of user data
+  - Clear attribution requirements
+  - Examples of secure credential handling
+
+# Transaction Processing Rule
+rule_request_5: |
+  Update our transaction processing rule to ensure robust handling of YNAB transactions.
+  The rule should require:
+  - Proper validation before API calls
+  - Correct milliunits conversion
+  - Category matching and validation
+  - Split transaction support
+  - Duplicate detection
+  - Clear examples of transaction processing

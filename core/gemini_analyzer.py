@@ -3,7 +3,7 @@ import re
 import json
 import logging
 from typing import List, Dict, Optional, Union
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, getcontext, ROUND_HALF_UP
 from datetime import datetime, date
 
 import google.generativeai as genai
@@ -26,6 +26,20 @@ from .shared_models import (
 )
 from .data_validation import DataValidator
 from typing_extensions import runtime_checkable, Protocol
+
+# Define CategoryUpdate locally if not available in shared_models
+class CategoryUpdate(BaseModel):
+    """Model for category update operations"""
+    transaction_id: str
+    category_id: str
+    memo: Optional[str] = None
+
+# Fallback class to maintain compatibility if ai_client_factory imports aren't available
+try:
+    from .ai_client_factory import AIClientFactory, AIProvider
+except ImportError:
+    AIClientFactory = None
+    AIProvider = None
 
 @runtime_checkable
 class AnalysisModule(Protocol):
@@ -106,6 +120,75 @@ class InvalidGeminiResponseError(Exception):
     """Raised when Gemini's response cannot be parsed or validated"""
     pass
 
+class MonetaryPrecision:
+    def __init__(self):
+        self.ctx = getcontext()
+        self.ctx.prec = 6  # Set high precision
+        self.ctx.rounding = ROUND_HALF_UP
+
+    def parse_amount(self, input_str: str) -> Decimal:
+        try:
+            # Log the input for debugging
+            print(f"Parsing amount: {input_str}")
+            
+            # Handle None or empty input
+            if input_str is None or input_str == '':
+                raise ValueError("Input cannot be None or empty")
+            
+            # Convert input to string if it's not already
+            input_str = str(input_str).strip()
+            
+            # Strip currency symbols, handle comma-separated numbers
+            cleaned_input = input_str.strip('$').replace(',', '')
+            
+            # Log the cleaned input
+            print(f"Cleaned input: {cleaned_input}")
+            
+            return self.ctx.create_decimal(cleaned_input)
+        except InvalidOperation as e:
+            print(f"InvalidOperation error: {e}")
+            raise ValueError(f"Invalid monetary format: {input_str}")
+        except Exception as e:
+            print(f"Unexpected error parsing amount: {e}")
+            raise ValueError(f"Invalid monetary format: {input_str}")
+
+class TransactionConfidenceScorer:
+    def __init__(self, threshold: float = 0.85):
+        self.threshold = threshold
+        self.monetary_parser = MonetaryPrecision()
+
+    def score_transaction(self, transaction: Dict) -> float:
+        """
+        Calculate confidence score for a transaction
+        
+        Scoring criteria:
+        - Completeness of information
+        - Consistency of data
+        - Alignment with historical patterns
+        """
+        score = 1.0
+        
+        # Deduct points for missing or suspicious data
+        if not transaction.get('payee'):
+            score -= 0.2
+        
+        if not transaction.get('category'):
+            score -= 0.1
+        
+        # Amount sanity check
+        try:
+            amount = self.monetary_parser.parse_amount(transaction.get('amount', 0))
+            if amount <= 0 or amount > 10000:  # Arbitrary large transaction limit
+                score -= 0.2
+        except ValueError:
+            score -= 0.3
+        
+        return max(0, min(score, 1.0))
+
+    def is_transaction_reliable(self, transaction: Dict) -> bool:
+        """Determine if transaction meets confidence threshold"""
+        return self.score_transaction(transaction) >= self.threshold
+
 class GeminiSpendingAnalyzer:
     """
     Enhanced spending analyzer with plugin support and confidence scoring
@@ -113,7 +196,8 @@ class GeminiSpendingAnalyzer:
     def __init__(
         self, 
         config_manager: Optional[ConfigManager] = None, 
-        ynab_client: Optional[YNABClient] = None
+        ynab_client: Optional[YNABClient] = None,
+        ai_client_factory: Optional['AIClientFactory'] = None
     ):
         """
         Initialize Gemini Spending Analyzer with advanced configuration
@@ -121,6 +205,7 @@ class GeminiSpendingAnalyzer:
         Args:
             config_manager (Optional[ConfigManager]): Configuration management
             ynab_client (Optional[YNABClient]): YNAB client for context
+            ai_client_factory (Optional['AIClientFactory']): AI client factory for model selection
         """
         # Configure logging
         self.logger = logging.getLogger(__name__)
@@ -128,7 +213,28 @@ class GeminiSpendingAnalyzer:
         # Load configuration
         self.config = config_manager or ConfigManager()
         
-        # Initialize Gemini client with enhanced safety and performance settings
+        # Store AI client factory
+        self.ai_client_factory = ai_client_factory
+        
+        # Store YNAB client for context
+        self.ynab_client = ynab_client
+        
+        # Initialize modules list
+        self.analysis_modules = []
+        
+        # Configure some defaults in case we need to fallback to direct Gemini usage
+        self.general_model_name = os.getenv('GEMINI_OTHER_MODEL', 'gemini-1.5-flash')
+        self.reasoning_model_name = os.getenv('GEMINI_REASONER_MODEL', 'gemini-1.5-pro')
+        
+        # If we have a factory, we'll use it. Otherwise, we'll initialize Gemini directly
+        if self.ai_client_factory is None:
+            self._initialize_fallback_gemini()
+        else:
+            # Even with the factory, we still need to discover plugins
+            self._discover_plugins()
+        
+    def _initialize_fallback_gemini(self):
+        """Initialize direct Gemini models as fallback if no AI client factory is provided"""
         try:
             import google.generativeai as genai
             
@@ -139,9 +245,10 @@ class GeminiSpendingAnalyzer:
             
             genai.configure(api_key=api_key)
             
-            # Initialize model with advanced configuration
+            # Initialize models with appropriate configurations
+            # General model for quick tasks
             self.model = genai.GenerativeModel(
-                'gemini-pro',  # Latest general-purpose model
+                self.general_model_name,  # Use environment variable with fallback
                 generation_config=genai.types.GenerationConfig(
                     # Precise configuration for financial analysis
                     temperature=0.1,  # Low randomness for consistent results
@@ -158,20 +265,94 @@ class GeminiSpendingAnalyzer:
                 }
             )
             
-            # Optional: YNAB client for additional context
-            self.ynab_client = ynab_client
+            # Initialize reasoning model for complex tasks
+            self.reasoning_model = genai.GenerativeModel(
+                self.reasoning_model_name,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.2,  # Slightly more creative for reasoning
+                    top_p=0.95,
+                    top_k=40,
+                    max_output_tokens=4096,  # Larger for more complex reasoning
+                ),
+                safety_settings={
+                    # Same safety settings
+                    genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: genai.types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
+                }
+            )
+            self.logger.info(f"Initialized fallback Gemini models: {self.general_model_name} and {self.reasoning_model_name}")
             
             # Discover and register analysis plugins
             self._discover_plugins()
             
-        except ImportError as e:
-            self.logger.error(f"Failed to import Gemini AI library: {e}")
+        except ImportError:
+            self.logger.error("Google Generative AI package not found. Please install with: pip install google-generativeai")
             raise
         except Exception as e:
-            self.logger.error(f"Failed to initialize Gemini analyzer: {e}")
+            self.logger.error(f"Failed to initialize Gemini: {str(e)}")
             raise
 
     def _discover_plugins(self):
+        """
+        Discover and register analysis plugins from the plugins directory
+        """
+        try:
+            # Initialize plugins dictionary if needed
+            if not hasattr(self, 'plugins'):
+                self.plugins = {}
+                
+            # Look for both traditional plugins and analysis modules
+            self._discover_traditional_plugins()
+            self._discover_analysis_modules()
+                
+        except Exception as e:
+            self.logger.error(f"Error discovering plugins: {str(e)}")
+            # Continue without plugins rather than failing completely
+            self.plugins = {}
+            
+    def _discover_traditional_plugins(self):
+        """Discover traditional plugins from the plugins directory"""
+        try:
+            # Define the plugins package path
+            plugins_dir = os.path.join(os.path.dirname(__file__), 'plugins')
+            plugins_package = 'core.plugins'
+            
+            # Check if the plugins directory exists
+            if not os.path.exists(plugins_dir):
+                self.logger.info(f"Plugins directory not found: {plugins_dir}")
+                return
+                
+            # Find all potential plugin modules
+            for filename in os.listdir(plugins_dir):
+                if filename.endswith('.py') and not filename.startswith('_'):
+                    module_name = filename[:-3]  # Remove .py extension
+                    
+                    try:
+                        # Import the module
+                        plugin_module = importlib.import_module(f"{plugins_package}.{module_name}")
+                        
+                        # Look for a register_plugin function
+                        if hasattr(plugin_module, 'register_plugin'):
+                            # Register the plugin
+                            plugin_info = plugin_module.register_plugin(self)
+                            
+                            if plugin_info and isinstance(plugin_info, dict):
+                                self.plugins[module_name] = plugin_info
+                                self.logger.info(f"Registered plugin: {module_name}")
+                            else:
+                                self.logger.warning(f"Plugin {module_name} returned invalid registration info")
+                        else:
+                            self.logger.debug(f"Module {module_name} is not a valid plugin (no register_plugin function)")
+                    except Exception as e:
+                        self.logger.error(f"Error loading plugin {module_name}: {str(e)}")
+                        
+            self.logger.info(f"Loaded {len(self.plugins)} traditional plugins: {', '.join(self.plugins.keys()) if self.plugins else 'none'}")
+        except Exception as e:
+            self.logger.error(f"Error discovering traditional plugins: {str(e)}")
+            
+    def _discover_analysis_modules(self):
         """
         Discover and load analysis modules dynamically
         Follows plugin-based expansion rule
@@ -182,6 +363,7 @@ class GeminiSpendingAnalyzer:
             if os.path.exists(plugin_dir):
                 sys.path.insert(0, plugin_dir)
                 
+                module_count = 0
                 for filename in os.listdir(plugin_dir):
                     if filename.endswith('_module.py'):
                         module_name = filename[:-3]  # Remove .py
@@ -189,13 +371,42 @@ class GeminiSpendingAnalyzer:
                             module = importlib.import_module(module_name)
                             for name, obj in module.__dict__.items():
                                 if (isinstance(obj, type) and 
-                                    issubclass(obj, AnalysisModule) and 
-                                    obj is not AnalysisModule):
-                                    self.register_analysis_module(obj())
+                                    hasattr(obj, '_is_analysis_module') and 
+                                    obj._is_analysis_module):
+                                    module_instance = obj()
+                                    self.register_analysis_module(module_instance)
+                                    module_count += 1
                         except Exception as e:
-                            self.logger.warning(f"Could not load plugin {module_name}: {e}")
+                            self.logger.warning(f"Could not load analysis module {module_name}: {e}")
+                            
+                self.logger.info(f"Loaded {module_count} analysis modules")
         except Exception as e:
-            self.logger.error(f"Plugin discovery failed: {e}")
+            self.logger.error(f"Analysis module discovery failed: {e}")
+            # Continue even if analysis module discovery fails
+
+    def _generate_with_model(self, prompt, use_reasoning=False, **kwargs):
+        """Generate content using the appropriate model"""
+        try:
+            temperature = kwargs.get('temperature', 0.1 if not use_reasoning else 0.2)
+            
+            if self.ai_client_factory:
+                # Use the AI client factory
+                if use_reasoning:
+                    response = self.ai_client_factory.generate_with_reasoning_model(prompt, temperature=temperature)
+                else:
+                    response = self.ai_client_factory.generate_with_general_model(prompt, temperature=temperature)
+                
+                # Extract content from AIClientResponse object
+                return response.content if hasattr(response, 'content') else str(response)
+            else:
+                # Fallback to direct Gemini usage
+                import google.generativeai as genai
+                model = self.reasoning_model if use_reasoning else self.model
+                response = model.generate_content(prompt)
+                return response.text
+        except Exception as e:
+            self.logger.error(f"Error generating content: {str(e)}")
+            raise
 
     def register_analysis_module(self, module: AnalysisModule):
         """
@@ -220,65 +431,208 @@ class GeminiSpendingAnalyzer:
         Returns:
             List of transactions with AI-suggested categories
         """
-        # Prepare prompt with context
-        prompt = f"""
-        You are an expert financial categorization assistant. 
-        Your task is to match transactions to the most appropriate category.
-
-        Existing Categories: {json.dumps(existing_categories)}
-
-        For each transaction, provide:
-        1. Best matching category name
-        2. Confidence score (0-100%)
-        3. Reasoning for the match
-
-        Transaction Details Format:
-        {{
-            "id": "transaction_id",
-            "description": "Transaction description",
-            "amount": transaction_amount,
-            "date": "transaction_date"
-        }}
-
-        Transactions: {json.dumps(transactions[:10])}  # Limit to first 10 for token management
-
-        Response Format (JSON):
-        [
-            {{
-                "transaction_id": "id",
-                "suggested_category": "Category Name",
-                "confidence": 85,
-                "reasoning": "Detailed explanation of category match"
-            }}
+        self.logger.info(f"AI category matcher called with {len(transactions)} transactions and {len(existing_categories)} categories")
+        
+        # Organize categories by groups for better context
+        category_groups = {}
+        for cat in existing_categories:
+            group = cat.get('group', 'Uncategorized')
+            if group not in category_groups:
+                category_groups[group] = []
+            category_groups[group].append(cat)
+        
+        # Create formatted category list with hierarchical structure
+        formatted_categories = []
+        for group, cats in category_groups.items():
+            formatted_categories.append(f"## {group}")
+            for cat in cats:
+                formatted_categories.append(f"- {cat.get('name')} (ID: {cat.get('id')})")
+        
+        # Example matches to guide the model
+        example_matches = [
+            {
+                "transaction": {"description": "Grocery store purchase", "amount": 56.78},
+                "match": {"category": "Groceries", "group": "Food", "confidence": 0.95, "reasoning": "Clear grocery store purchase"}
+            },
+            {
+                "transaction": {"description": "Monthly Netflix subscription", "amount": 14.99},
+                "match": {"category": "Streaming Services", "group": "Entertainment", "confidence": 0.98, "reasoning": "Clearly identified subscription service"}
+            },
+            {
+                "transaction": {"description": "interest accrued", "amount": 12.34},
+                "match": {"category": "Interest Income", "group": "Income", "confidence": 0.90, "reasoning": "Interest income is a type of income"}
+            }
         ]
-        """
-
-        try:
-            # Generate category matching recommendations
-            response = self.model.generate_content(
-                prompt, 
-                generation_config={
-                    'temperature': 0.2,  # More deterministic
-                    'max_output_tokens': 1024
-                }
-            )
-
-            # Parse and validate response
-            try:
-                parsed_response = json.loads(response.text)
-                
-                # Validate response structure
-                if not isinstance(parsed_response, list):
-                    raise ValueError("Response is not a list of category matches")
-                
-                return parsed_response
+        
+        # Prepare transactions batch for processing
+        # Process in smaller batches if needed to avoid token limits
+        batch_size = min(20, len(transactions))
+        batches = [transactions[i:i+batch_size] for i in range(0, len(transactions), batch_size)]
+        
+        all_results = []
+        
+        for batch_idx, batch in enumerate(batches):
+            self.logger.debug(f"Processing category matching batch {batch_idx+1}/{len(batches)} with {len(batch)} transactions")
             
-            except json.JSONDecodeError as e:
-                self.logger.error(f"Failed to parse AI category matching response: {e}")
-                return []
-
-        except Exception as e:
-            self.logger.error(f"AI Category Matching failed: {e}")
+            # Prepare prompt with context
+            prompt = f"""
+            You are an expert financial categorization assistant working with YNAB (You Need A Budget).
+            Your task is to match transaction descriptions to the most appropriate category from the provided list.
+            
+            # Available Categories (organized by group)
+            {'\n'.join(formatted_categories)}
+            
+            # Guidelines for Category Matching
+            1. Match each transaction to the EXACT category name from the list above
+            2. Consider the transaction description, amount, and other details
+            3. Prioritize specific categories over general ones
+            4. Look for keywords and context clues in the description
+            5. If unsure, choose the best match and note lower confidence
+            6. If no good match exists, recommend the most appropriate existing category
+            7. IMPORTANT: Only use category names that exist in the provided list
+            
+            # Example Matches
+            {json.dumps(example_matches, indent=2)}
+            
+            # Transactions to Categorize
+            {json.dumps(batch, indent=2)}
+            
+            # Response Instructions
+            Return a JSON array of objects with these fields:
+            - transaction_id: ID of the transaction
+            - suggested_category: EXACT name of the suggested category (must match one in the list)
+            - confidence: Number between 0 and 1 indicating match confidence (0.9+ for high confidence)
+            - reasoning: Brief explanation of why this category was chosen
+            
+            Example response format:
+            ```json
+            [
+                {{
+                    "transaction_id": "transaction-123",
+                    "suggested_category": "Groceries",
+                    "confidence": 0.95,
+                    "reasoning": "Transaction description clearly indicates a grocery store purchase"
+                }}
+            ]
+            ```
+            
+            IMPORTANT: Ensure your response contains valid JSON that can be parsed programmatically.
+            Only suggest categories that exactly match ones from the provided list of available categories.
+            """
+            
+            try:
+                # Generate category matching recommendations
+                response = self._generate_with_model(
+                    prompt,
+                    use_reasoning=False,
+                    temperature=0.1
+                )
+                
+                # Extract JSON content from response
+                try:
+                    if hasattr(response, 'text'):
+                        response_text = response.text
+                    else:
+                        # Handle different response formats
+                        response_text = str(response)
+                    
+                    # Use JSON extraction method
+                    matches = self._extract_json_from_response(response_text)
+                    
+                    if matches:
+                        # Validate each match
+                        validated_matches = []
+                        for match in matches:
+                            if not isinstance(match, dict):
+                                self.logger.warning(f"Skipping invalid match format: {match}")
+                                continue
+                                
+                            # Ensure required fields are present
+                            if 'transaction_id' not in match or 'suggested_category' not in match:
+                                self.logger.warning(f"Skipping match missing required fields: {match}")
+                                continue
+                                
+                            # Normalize confidence
+                            if 'confidence' in match:
+                                try:
+                                    # Handle percentage values or decimal values
+                                    conf_value = float(match['confidence'])
+                                    if conf_value > 1:  # If provided as percentage
+                                        conf_value = conf_value / 100
+                                    match['confidence'] = max(0.0, min(1.0, conf_value))
+                                except (ValueError, TypeError):
+                                    match['confidence'] = 0.5  # Default confidence
+                            else:
+                                match['confidence'] = 0.5
+                                
+                            # Verify the suggested category exists
+                            category_exists = False
+                            for cat in existing_categories:
+                                if (cat.get('name', '').lower() == match['suggested_category'].lower() or
+                                    cat.get('full_name', '').lower() == match['suggested_category'].lower()):
+                                    # Update to exact case match
+                                    match['suggested_category'] = cat.get('name') or cat.get('full_name').split(':')[-1].strip()
+                                    category_exists = True
+                                    break
+                                    
+                            if not category_exists:
+                                # If category doesn't exist, log warning but still include the match
+                                self.logger.warning(f"Category '{match['suggested_category']}' not found in existing categories")
+                                
+                            validated_matches.append(match)
+                            
+                        all_results.extend(validated_matches)
+                        self.logger.info(f"Successfully matched {len(validated_matches)} transactions in batch {batch_idx+1}")
+                    else:
+                        self.logger.warning(f"No valid matches found in batch {batch_idx+1}")
+                
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Failed to parse AI category matching response: {e}")
+                    self.logger.debug(f"Raw response: {response_text}")
+                
+                except Exception as e:
+                    self.logger.error(f"Error processing category matches: {str(e)}")
+                    
+            except Exception as e:
+                self.logger.error(f"AI Category Matching failed for batch {batch_idx+1}: {str(e)}")
+                
+        self.logger.info(f"AI category matching complete. Matched {len(all_results)}/{len(transactions)} transactions")
+        return all_results
+    
+    def _extract_json_from_response(self, response_text: str) -> List[Dict]:
+        """
+        Extract JSON data from a text response that might contain markdown or other formatting
+        
+        Args:
+            response_text (str): Raw response text
+            
+        Returns:
+            List[Dict]: Extracted JSON data or empty list if extraction fails
+        """
+        # Try to extract JSON from markdown code blocks first
+        json_block_pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
+        matches = re.findall(json_block_pattern, response_text)
+        
+        if matches:
+            # Use the first code block that contains valid JSON
+            for match in matches:
+                try:
+                    return json.loads(match.strip())
+                except json.JSONDecodeError:
+                    continue
+        
+        # If no valid JSON in code blocks, try to find JSON objects directly
+        try:
+            # Look for array of objects
+            array_pattern = r'\[\s*\{[\s\S]*\}\s*\]'
+            array_match = re.search(array_pattern, response_text)
+            if array_match:
+                return json.loads(array_match.group(0))
+            
+            # Try parsing the entire response as JSON
+            return json.loads(response_text)
+        except json.JSONDecodeError:
+            self.logger.warning("Could not extract JSON from response")
             return []
 
     def _validate_gemini_response(self, response_text: str, expected_fields: List[str]) -> Dict:
@@ -370,36 +724,29 @@ class GeminiSpendingAnalyzer:
         
         try:
             # Generate categorization with enhanced context
-            response = self.model.generate_content(
+            response = self._generate_with_model(
                 self._create_categorization_prompt(transactions, ynab_categories),
-                generation_config={
-                    'temperature': 0.2,
-                    'max_output_tokens': 2048
-                }
+                use_reasoning=True
             )
             
             # Validate response
             required_fields = ['transaction_id', 'category_name', 'confidence', 'reasoning']
             try:
                 categorization_results = self._validate_gemini_response(
-                    response.text,
+                    response,
                     required_fields
                 )
             except GeminiHallucinationError as he:
                 self.logger.error(f"Detected hallucination in Gemini response: {he}")
                 # Retry with more strict parameters
-                response = self.model.generate_content(
+                response = self._generate_with_model(
                     self._create_categorization_prompt(transactions, ynab_categories),
-                    generation_config={
-                        'temperature': 0.1,  # Lower temperature for more focused response
-                        'max_output_tokens': 1024,  # Limit response size
-                        'top_p': 0.7,  # More focused token selection
-                        'top_k': 20  # Limit vocabulary
-                    }
+                    use_reasoning=True,
+                    temperature=0.1
                 )
                 # Validate retry response
                 categorization_results = self._validate_gemini_response(
-                    response.text,
+                    response,
                     required_fields
                 )
             
@@ -623,8 +970,8 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
         prompt = self._create_prompt(transactions)
         
         try:
-            response = self.model.generate_content(prompt)
-            parsed_response = self._parse_response(response.text)
+            response = self._generate_with_model(prompt, use_reasoning=True)
+            parsed_response = self._parse_response(response)
             return SpendingAnalysis(**parsed_response)
         except ValidationError as e:
             raise ValueError(f"Invalid AI response: {e}")
@@ -655,34 +1002,27 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
     def parse_transaction_creation(self, query: str) -> Dict:
         """Parse transaction details with enhanced error handling"""
         try:
-            response = self.model.generate_content(
+            response = self._generate_with_model(
                 self._create_transaction_prompt(query),
-                generation_config={
-                    'temperature': 0.1,
-                    'max_output_tokens': 512
-                }
+                use_reasoning=True
             )
             
             # Validate response
             required_fields = ['amount', 'date', 'payee_name']
             try:
                 parsed_details = self._validate_gemini_response(
-                    response.text,
+                    response,
                     required_fields
                 )
             except GeminiHallucinationError:
                 # Retry with more constraints
-                response = self.model.generate_content(
+                response = self._generate_with_model(
                     self._create_transaction_prompt(query),
-                    generation_config={
-                        'temperature': 0.05,
-                        'max_output_tokens': 256,
-                        'top_p': 0.5,
-                        'top_k': 10
-                    }
+                    use_reasoning=True,
+                    temperature=0.05
                 )
                 parsed_details = self._validate_gemini_response(
-                    response.text,
+                    response,
                     required_fields
                 )
             
@@ -823,16 +1163,14 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
         
         try:
             # Generate category update details
-            response = self.model.generate_content(
+            response = self._generate_with_model(
                 prompt,
-                generation_config={
-                    'temperature': 0.1,
-                    'max_output_tokens': 512
-                }
+                use_reasoning=True,
+                temperature=0.1
             )
             
             # Parse the response
-            response_text = response.text.strip()
+            response_text = response.strip()
             
             # Log the raw response for debugging
             self.logger.debug(f"Raw response: {response_text}")
@@ -914,164 +1252,231 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
 
     def _create_transaction_prompt(self, query: str) -> str:
         """
-        Create a structured prompt for transaction parsing with enhanced guidance
+        Create a structured prompt for transaction parsing with strict JSON output requirements
         
         Args:
             query (str): Natural language transaction description
         
         Returns:
-            str: Structured prompt for Gemini Pro
+            str: Prompt for Gemini to generate structured transaction data
         """
+        # Extract amount using regex
+        amount_match = re.search(r'\$?(\d+(?:\.\d{1,2})?)', query)
+        amount = amount_match.group(1) if amount_match else '50.00'
+        
         return f"""
-        PRECISE TRANSACTION PARSING INSTRUCTIONS:
+Parse the following transaction description and return a STRICTLY FORMATTED JSON object:
 
-        Transaction Description: "{query}"
+Transaction Description: "{query}"
 
-        YOU MUST:
-        1. Parse the transaction description EXACTLY
-        2. Provide ONLY a JSON response
-        3. NO additional text or explanation
-        4. MATCH these EXACT keys and types
+SPECIFIC PARSING REQUIREMENTS:
+- EXTRACT EXACT AMOUNT: {amount}
+- IDENTIFY PAYEE/MERCHANT
+- USE TODAY'S DATE IF NO SPECIFIC DATE MENTIONED
 
-        JSON TEMPLATE (MUST FOLLOW EXACTLY):
-        {{
-            "amount": {{
-                "value": 50.00,
-                "currency": "USD"
-            }},
-            "payee_name": "Target",
-            "category": "Household Supplies",
-            "memo": "Household items purchased",
-            "is_outflow": true,
-            "confidence": 0.85
-        }}
+JSON SCHEMA REQUIREMENTS:
+- MUST be valid, parseable JSON
+- MONETARY AMOUNT: {amount}
+- Dates in YYYY-MM-DD format
+- REQUIRED FIELDS: amount, payee_name, date
+- OPTIONAL FIELDS: memo, category_name, is_outflow
 
-        PARSING RULES:
-        - Extract EXACT numeric amount from description
-        - Use "USD" as default currency
-        - Determine payee from description
-        - Choose most appropriate category
-        - Set is_outflow to true for spending
-        - Estimate confidence between 0 and 1
+EXAMPLE OUTPUT:
+{{
+    "amount": {amount},
+    "payee_name": "Target",
+    "date": "{date.today().strftime('%Y-%m-%d')}",
+    "is_outflow": true,
+    "memo": "Shopping trip",
+    "category_name": "Shopping"
+}}
 
-        EXAMPLE CONVERSIONS:
-        "$50 at Target" → 
-        {{
-            "amount": {{"value": 50.00, "currency": "USD"}},
-            "payee_name": "Target",
-            "category": "Household Supplies",
-            "memo": "Household items",
-            "is_outflow": true,
-            "confidence": 0.9
-        }}
+PARSING INSTRUCTIONS:
+1. Use the SPECIFIED AMOUNT: {amount}
+2. Identify payee/merchant name from description
+3. Use today's date
+4. Determine if transaction is an expense (outflow)
+5. Add a descriptive memo if possible
+6. Suggest an appropriate category
 
-        CRITICAL: RESPOND WITH ONLY THE JSON. NO EXPLANATION.
-        """
+IMPORTANT: 
+- RETURN ONLY THE JSON
+- NO MARKDOWN CODE BLOCKS
+- NO ADDITIONAL TEXT
+- ENSURE NUMERIC PRECISION
+"""
 
     def parse_transaction(self, transaction_description: str) -> TransactionCreate:
         """
-        Parse a natural language transaction description into a TransactionCreate object.
+        Hybrid transaction parsing with reasoning chain and fallback mechanisms
         
         Args:
-            transaction_description (str): Natural language description of the transaction
+            transaction_description (str): Natural language transaction description
         
         Returns:
-            TransactionCreate: A validated transaction object
+            TransactionCreate: Parsed and validated transaction
+        """
+        # Initialize confidence scorer and monetary parser
+        confidence_scorer = TransactionConfidenceScorer()
+        monetary_parser = MonetaryPrecision()
         
-        Raises:
-            InvalidGeminiResponseError: If the transaction cannot be parsed
-            GeminiHallucinationError: If the response appears to be a hallucination
+        # Logging setup
+        self.logger.info(f"Parsing transaction: {transaction_description}")
+        
+        # Reasoning Chain Stage 1: AI-Powered Parsing
+        try:
+            # Generate structured prompt for AI parsing
+            ai_parsing_prompt = f"""
+            Parse the following transaction description with extreme precision:
+            "{transaction_description}"
+            
+            Provide a JSON response with these REQUIRED fields:
+            {{
+                "amount": {{
+                    "value": float,  # Absolute amount value
+                    "is_outflow": bool  # Whether it's an expense
+                }},
+                "payee_name": str,  # Merchant or payee name
+                "date": str,  # ISO 8601 date (YYYY-MM-DD)
+                "memo": str,  # Optional description
+                "confidence": float  # Confidence score (0-1)
+            }}
+            
+            RULES:
+            - Extract amount precisely
+            - Determine if it's an expense or income
+            - Use today's date if no date specified
+            - Be extremely specific about parsing
+            - Provide reasoning for each field
+            """
+            
+            # Generate AI response
+            ai_response = self._generate_with_model(
+                ai_parsing_prompt,
+                use_reasoning=False,
+                temperature=0.2,
+                max_output_tokens=256
+            )
+            
+            # Parse AI response
+            parsed_response = self._parse_ai_transaction_response(ai_response)
+            
+            # Validate confidence
+            if parsed_response.get('confidence', 0) < 0.7:
+                raise ValueError("Low confidence AI parsing")
+            
+            # Extract parsed data
+            amount_data = parsed_response.get('amount', {})
+            amount_value = amount_data.get('value')
+            is_outflow = amount_data.get('is_outflow', True)
+            
+            # Fallback Stage 1: Regex Amount Extraction
+            if not amount_value:
+                try:
+                    amount_value = monetary_parser.parse_amount(transaction_description)
+                    is_outflow = amount_value < 0
+                except Exception as e:
+                    self.logger.warning(f"Regex amount parsing failed: {e}")
+                    raise
+            
+            # Prepare transaction data
+            transaction_data = {
+                'account_id': os.getenv('DEFAULT_ACCOUNT_ID', ''),  # Use default account
+                'date': parsed_response.get('date', str(date.today())),
+                'amount': TransactionAmount(
+                    amount=abs(float(amount_value)),
+                    is_outflow=is_outflow
+                ),
+                'payee_name': parsed_response.get('payee_name', ''),
+                'memo': parsed_response.get('memo', transaction_description)
+            }
+            
+            # Create and validate transaction
+            transaction = TransactionCreate(**transaction_data)
+            
+            # Log successful parsing
+            self.logger.info(
+                f"Successfully parsed transaction: {transaction.payee_name}, "
+                f"Amount: {'$' if not transaction.amount.is_outflow else '-$'}{transaction.amount.amount}"
+            )
+            
+            return transaction
+        
+        except Exception as primary_error:
+            # Fallback Stage 2: Comprehensive Error Recovery
+            self.logger.warning(f"Primary parsing failed: {primary_error}")
+            
+            try:
+                # Attempt manual parsing with regex and heuristics
+                amount = monetary_parser.parse_amount(transaction_description)
+                is_outflow = amount < 0
+                
+                # Extract payee using simple heuristics
+                payee_match = re.search(r'at\s+([A-Za-z\s]+)', transaction_description, re.IGNORECASE)
+                payee_name = payee_match.group(1).strip() if payee_match else 'Unknown'
+                
+                # Create transaction with fallback data
+                fallback_transaction = TransactionCreate(
+                    account_id=os.getenv('DEFAULT_ACCOUNT_ID', ''),
+                    date=date.today(),
+                    amount=TransactionAmount(
+                        amount=abs(float(amount)),
+                        is_outflow=is_outflow
+                    ),
+                    payee_name=payee_name,
+                    memo=transaction_description
+                )
+                
+                # Log fallback parsing
+                self.logger.warning(
+                    f"Fallback parsing successful: {fallback_transaction.payee_name}, "
+                    f"Amount: {'$' if not fallback_transaction.amount.is_outflow else '-$'}{fallback_transaction.amount.amount}"
+                )
+                
+                return fallback_transaction
+            
+            except Exception as fallback_error:
+                # Final error handling
+                self.logger.error(f"Transaction parsing completely failed: {fallback_error}")
+                raise ValueError(f"Could not parse transaction: {transaction_description}")
+    
+    def _parse_ai_transaction_response(self, response_text: str) -> Dict:
+        """
+        Parse and validate AI transaction response
+        
+        Args:
+            response_text (str): Raw AI response text
+        
+        Returns:
+            Dict: Parsed and validated transaction data
         """
         try:
-            # Generate transaction data from Gemini Pro
-            response = self.model.generate_content(
-                self._create_transaction_prompt(transaction_description),
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.1,  # Low temperature for consistent output
-                    max_output_tokens=256  # Limit output size
-                )
-            )
+            # Remove code block markers if present
+            clean_text = response_text.strip('`').strip()
             
-            # Log the raw response for debugging
-            raw_response_text = response.text.strip()
-            self.logger.debug(f"Raw Gemini response for transaction parsing: {raw_response_text}")
-            
-            # Attempt to parse the response as JSON
+            # Try parsing as JSON
             try:
-                # Use json.loads to parse the response
-                import json
-                parsed_data = json.loads(raw_response_text)
-                
-                # Log the parsed JSON for debugging
-                self.logger.debug(f"Parsed JSON data: {parsed_data}")
-            except json.JSONDecodeError as json_error:
-                self.logger.error(f"Failed to parse JSON: {json_error}")
-                self.logger.error(f"Problematic JSON text: {raw_response_text}")
-                raise InvalidGeminiResponseError(f"Invalid JSON format: {json_error}")
+                parsed_data = json.loads(clean_text)
+            except json.JSONDecodeError:
+                # Attempt to extract JSON from text
+                json_match = re.search(r'\{.*\}', clean_text, re.DOTALL)
+                if json_match:
+                    parsed_data = json.loads(json_match.group(0))
+                else:
+                    raise ValueError("No valid JSON found")
             
-            # Validate the parsed data
-            try:
-                parsed_data = self._validate_gemini_response(
-                    raw_response_text, 
-                    expected_fields=[
-                        "amount", "payee_name", "category", 
-                        "memo", "is_outflow", "confidence"
-                    ]
-                )
-            except (InvalidGeminiResponseError, GeminiHallucinationError) as validation_error:
-                self.logger.error(f"Transaction parsing validation error: {validation_error}")
-                self.logger.error(f"Problematic response text: {raw_response_text}")
-                raise
+            # Validate required fields
+            required_fields = ['amount', 'payee_name', 'date']
+            for field in required_fields:
+                if field not in parsed_data:
+                    raise ValueError(f"Missing required field: {field}")
             
-            # Extract amount details with robust error handling
-            try:
-                # Ensure amount is a dictionary
-                amount_data = parsed_data.get('amount', {})
-                if not isinstance(amount_data, dict):
-                    raise ValueError(f"Amount must be a dictionary, got {type(amount_data)}")
-                
-                # Detailed logging of amount data
-                self.logger.debug(f"Amount data received: {amount_data}")
-                
-                # Ensure 'value' exists and is a valid number
-                amount_value = amount_data.get('value')
-                if amount_value is None:
-                    raise ValueError("Amount 'value' is missing or None")
-                
-                # Convert to Decimal for precise handling
-                try:
-                    amount_decimal = Decimal(str(amount_value))
-                except (TypeError, ValueError) as e:
-                    raise ValueError(f"Invalid amount value: {amount_value}. Error: {e}")
-                
-                # Ensure currency is present
-                currency = amount_data.get('currency', 'USD')
-                if not currency:
-                    raise ValueError("Currency is missing or empty")
-                
-                # Create AmountFromAI instance
-                amount = AmountFromAI(
-                    value=amount_decimal,
-                    currency=currency,
-                    source=AISource.GEMINI,
-                    is_outflow=parsed_data.get('is_outflow', True),
-                    confidence=parsed_data.get('confidence', 0.7)
-                )
-            except (KeyError, ValueError) as e:
-                self.logger.error(f"Error processing amount: {e}")
-                self.logger.error(f"Problematic amount data: {amount_data}")
-                raise InvalidGeminiResponseError(f"Invalid amount format: {e}")
+            # Normalize and validate data
+            parsed_data['confidence'] = parsed_data.get('confidence', 0.5)
+            parsed_data['memo'] = parsed_data.get('memo', '')
             
-            # Create and return TransactionCreate object
-            return TransactionCreate(
-                account_id=self.ynab_client.get_first_account_id(),
-                date=datetime.now().date(),
-                amount=amount,
-                payee_name=parsed_data['payee_name'],
-                category_name=parsed_data['category'],
-                memo=parsed_data.get('memo', '')
-            )
+            return parsed_data
         
         except Exception as e:
-            self.logger.error(f"Unexpected error in parse_transaction: {e}")
-            raise 
+            self.logger.error(f"AI response parsing failed: {e}")
+            raise ValueError(f"Invalid AI transaction response: {str(e)}") 

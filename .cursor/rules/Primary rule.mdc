@@ -1,0 +1,61 @@
+---
+description: ARCHITECTURE PRINCIPLES:
+globs: 
+alwaysApply: true
+---
+NEVER ACCESS ANDY BUDGETS EXCEPT YNAB_BUDGET_DEV=7c8d67c8-ed70-4ba8-a25e-931a2f294167
+
+DO NOT EVER ACCESS OTHER BUDGETS OR MAKE MODIFICATIONS TO CODE THAT WOULD ACCESS OTHERS OR RUN TERMINAL COMMANDS OR CULRS THAT WOULD ACCESS OTHERS.
+
+
+ARCHITECTURE PRINCIPLES:
+------------------------
+1. CORE-FIRST DEVELOPMENT:
+   - Core logic resides in core/ directory
+   - CLI and Streamlit serve as thin access layers
+   - Core logic should never import from interface layers
+
+2. PYDANTIC AI INTEGRATION:
+   - Use Pydantic BaseModel for all data structures
+   - Follow the Agent pattern with structured input/output 
+   - Define clear tool functions with comprehensive docstrings
+   - Use dependency injection pattern for services
+   - Create standalone Agents for specific tasks (transactions, categories, analysis)
+
+3. YNAB API BEST PRACTICES:
+   - Implement caching for all API responses (@lru_cache where appropriate)
+   - Use delta requests when available to reduce API load
+   - Implement circuit breakers for fault tolerance
+   - Make specific targeted requests rather than broad ones
+   - Handle rate limiting and API errors gracefully
+
+4. NATURAL LANGUAGE TESTING:
+   - Test through CLI natural language queries
+   - Document example queries for each feature
+   - Log comprehensive debugging information
+   - Create standard test scenarios to validate functionality
+   - Preserve test examples in documentation
+
+5. AI MODEL MANAGEMENT:
+   - Centralize prompt management
+   - Document system prompts with examples
+   - Use consistent temperature settings per task type
+   - Implement proper error handling for model responses
+   - Extract and validate JSON responses robustly
+
+6. ERROR HANDLING & LOGGING:
+   - Log at appropriate levels (DEBUG, INFO, WARNING, ERROR)
+   - Include context variables in log messages
+   - Provide user-friendly error messages
+   - Implement graceful fallbacks for AI components
+   - Use circuit breakers for external services
+
+7. ENVIRONMENT & CONFIGURATION:
+   - Use environment variables for all configuration
+   - Support separate development and production environments
+   - Document required environment variables
+   - Provide sensible defaults where possible
+   - Validate configuration on startup
+"""
+
+

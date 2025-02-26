@@ -6,6 +6,7 @@ from .ai_modules.semantic_matcher import GeminiSemanticMatcher
 from .ai_modules.spending_pattern_module import SpendingPatternAnalyzer
 from .base_agent import BaseAgent
 from .credentials import CredentialsManager
+from .ai_client_factory import AIClientFactory, AIClientConfig, AIProvider
 
 class Container(containers.DeclarativeContainer):
     """
@@ -20,6 +21,16 @@ class Container(containers.DeclarativeContainer):
         CredentialsManager
     )
     
+    # AI client factory with OpenAI fallback
+    ai_client_factory = providers.Singleton(
+        AIClientFactory,
+        config=AIClientConfig(
+            primary_provider=AIProvider.AUTO,
+            fallback_provider=AIProvider.OPENAI,
+            retry_on_failure=True
+        )
+    )
+    
     # YNAB client with credentials dependency
     ynab_client = providers.Singleton(
         YNABClient,
@@ -31,7 +42,8 @@ class Container(containers.DeclarativeContainer):
     gemini_analyzer = providers.Singleton(
         GeminiSpendingAnalyzer,
         config_manager=config,
-        ynab_client=ynab_client
+        ynab_client=ynab_client,
+        ai_client_factory=ai_client_factory
     )
     
     # Base agent with all dependencies
@@ -40,15 +52,18 @@ class Container(containers.DeclarativeContainer):
         name="CLIAgent",
         config_manager=config,
         ynab_client=ynab_client,
-        gemini_analyzer=gemini_analyzer
+        gemini_analyzer=gemini_analyzer,
+        ai_client_factory=ai_client_factory
     )
     
     semantic_matcher = providers.Factory(
         GeminiSemanticMatcher,
-        config_manager=config
+        config_manager=config,
+        ai_client_factory=ai_client_factory
     )
     
     spending_pattern_analyzer = providers.Factory(
         SpendingPatternAnalyzer,
-        config_manager=config
+        config_manager=config,
+        ai_client_factory=ai_client_factory
     ) 

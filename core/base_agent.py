@@ -6,10 +6,20 @@ from .agent_tool_tracker import tool_tracker
 from .config import ConfigManager
 from .ynab_client import YNABClient
 from .gemini_analyzer import GeminiSpendingAnalyzer
+from .pydantic_ai_transaction_parser import PydanticAITransactionParser
 import json
 import re
 from datetime import date
 import requests
+import openai
+import os
+
+# Import AIClientFactory, with fallback if not available
+try:
+    from .ai_client_factory import AIClientFactory, AIProvider
+except ImportError:
+    AIClientFactory = None
+    AIProvider = None
 
 class BaseAgent:
     """
@@ -20,7 +30,8 @@ class BaseAgent:
         name: str,
         config_manager: Optional[ConfigManager] = None,
         ynab_client: Optional[YNABClient] = None,
-        gemini_analyzer: Optional[GeminiSpendingAnalyzer] = None
+        gemini_analyzer: Optional[GeminiSpendingAnalyzer] = None,
+        ai_client_factory: Optional['AIClientFactory'] = None
     ):
         """
         Initialize the agent with a name and dependencies
@@ -30,6 +41,7 @@ class BaseAgent:
             config_manager (ConfigManager, optional): Configuration management
             ynab_client (YNABClient, optional): YNAB API client
             gemini_analyzer (GeminiSpendingAnalyzer, optional): Gemini analyzer for AI operations
+            ai_client_factory (AIClientFactory, optional): Factory for AI clients
         """
         self.name = name
         self.tool_tracker = tool_tracker
@@ -38,6 +50,7 @@ class BaseAgent:
         # Initialize core services with dependency injection
         self.config = config_manager or ConfigManager()
         self.ynab_client = ynab_client or YNABClient()
+        self.ai_client_factory = ai_client_factory
         
         # Initialize Gemini analyzer with dependencies if not provided
         if gemini_analyzer:
@@ -45,8 +58,12 @@ class BaseAgent:
         else:
             self.gemini_analyzer = GeminiSpendingAnalyzer(
                 config_manager=self.config,
-                ynab_client=self.ynab_client
+                ynab_client=self.ynab_client,
+                ai_client_factory=self.ai_client_factory
             )
+            
+        # Initialize the Pydantic AI transaction parser
+        self.transaction_parser = PydanticAITransactionParser()
 
     def use_tool(self, tool_func: Callable, *args, **kwargs):
         """
@@ -323,19 +340,67 @@ class BaseAgent:
             'transactions': transactions
         }
 
-    def process_query(self, query: str) -> Dict:
+    def _parse_with_openai(self, query: str) -> Dict[str, Any]:
         """
-        Process a natural language query and take appropriate action
+        Use OpenAI API to parse the transaction query as a backup.
+        """
+        try:
+            openai.api_key = os.getenv('OPENAI_API_KEY')
+            response = openai.Completion.create(
+                engine="text-davinci-003",
+                prompt=f"Parse this transaction query: {query}",
+                max_tokens=150
+            )
+            return json.loads(response.choices[0].text.strip())
+        except Exception as e:
+            self.logger.error(f"OpenAI parsing failed: {e}")
+            return {"status": "error", "summary": f"OpenAI parsing failed: {str(e)}"}
+
+    def process_query(self, query: str) -> Dict[str, Any]:
+        """
+        Process a natural language query and take appropriate action.
         
         Args:
-            query (str): Natural language query from the user
+            query (str): Natural language query from user
             
         Returns:
-            Dict: Response with results or error information
+            Dict[str, Any]: Response data
         """
-        self.logger.debug("Processing query: %r", query)
-        
         try:
+            # Clean and normalize the query
+            query = query.strip()
+            self.logger.debug(f"Processing query: query='{query}'")
+            
+            # Initialize transaction parser
+            parser = PydanticAITransactionParser()
+            
+            # Try to parse as a transaction creation request
+            if any(phrase in query.lower() for phrase in ["create", "add", "new", "spent", "paid", "bought"]):
+                self.logger.info("Detected transaction creation request")
+                try:
+                    # Parse the transaction
+                    transaction = parser.parse_transaction_sync(query)
+                    self.logger.debug(f"Parsed transaction: {transaction}")
+                    
+                    # Create the transaction
+                    self.logger.info(f"Creating transaction for budget: budget_id='{self.ynab_client.budget_id}'")
+                    result = self.ynab_client.create_transaction(transaction)
+                    
+                    if result and result.get("transaction"):
+                        return {
+                            "status": "success",
+                            "summary": "Transaction successfully created",
+                            "transaction": result["transaction"]
+                        }
+                    else:
+                        raise ValueError("No transaction data in response")
+                        
+                except Exception as e:
+                    self.logger.error(f"Transaction creation failed with Gemini: {str(e)}")
+                    # Fallback to OpenAI
+                    self.logger.info("Falling back to OpenAI for transaction parsing")
+                    return self._parse_with_openai(query)
+                    
             # Get intent from Gemini
             intent_prompt = f"""
             Analyze this financial query and determine the intent:
@@ -355,15 +420,15 @@ class BaseAgent:
             }}
             """
             
-            intent_response = self.gemini_analyzer.model.generate_content(
+            # Use _generate_with_model instead of directly accessing model
+            intent_response = self.gemini_analyzer._generate_with_model(
                 intent_prompt,
-                generation_config={
-                    'temperature': 0.1
-                }
+                use_reasoning=False,
+                temperature=0.1
             )
             
             # Parse intent from response
-            intent_text = intent_response.text
+            intent_text = intent_response
             self.logger.debug("Intent response: %r", intent_text)
             
             # Remove markdown code block if present
@@ -384,12 +449,39 @@ class BaseAgent:
             
             # Process based on intent
             if intent_data['intent'] == 'create_transaction':
-                # Try to parse as a transaction creation request
+                # Try to parse as a transaction creation request using our new parser
                 try:
-                    transaction = self.gemini_analyzer.parse_transaction(query)
+                    # Use the new Pydantic AI transaction parser for more robust parsing
+                    transaction = self.transaction_parser.parse_transaction_sync(query)
+                    
+                    # Convert date to ISO-8601 string for YNAB API
+                    if isinstance(transaction.date, date):
+                        date_str = transaction.date.isoformat()
+                    else:
+                        date_str = str(transaction.date)
+                        
+                    # Convert transaction to dictionary with proper amount handling
+                    transaction_dict = {
+                        'account_id': transaction.account_id,
+                        'date': date_str,
+                        'amount': float(transaction.amount.amount) if transaction.amount.is_outflow else -float(transaction.amount.amount),
+                        'payee_name': transaction.payee_name,
+                        'payee_id': transaction.payee_id,
+                        'memo': transaction.memo,
+                        'category_name': transaction.category_name,
+                        'cleared': transaction.cleared,
+                        'approved': transaction.approved,
+                        'flag_name': 'purple'  # Purple flag for new AI-created transactions
+                    }
+                    
+                    # Debug logging for transaction data
+                    self.logger.debug(f"Transaction dictionary before creation: {transaction_dict}")
                     
                     # Create the transaction
-                    result = self.ynab_client.create_transaction(transaction)
+                    result = self.ynab_client.create_transaction(transaction=transaction_dict)
+                    
+                    # Debug logging for response
+                    self.logger.debug(f"Transaction creation response: {result}")
                     
                     if result['status'] == 'success':
                         return {
@@ -412,6 +504,17 @@ class BaseAgent:
                 # Process category update request
                 try:
                     result = self.gemini_analyzer.process_category_update_request(query)
+                    
+                    # Add blue flag to indicate this is an AI-modified transaction
+                    if result['status'] == 'success' and 'transaction' in result:
+                        transaction_id = result['transaction'].get('id')
+                        if transaction_id:
+                            # Update the transaction with a blue flag
+                            update_result = self.ynab_client.update_transaction(
+                                transaction_id=transaction_id,
+                                updates={'flag_name': 'blue'}  # Blue flag for AI-modified transactions
+                            )
+                    
                     if result['status'] == 'success':
                         return {
                             'summary': 'Category updated successfully',
@@ -484,11 +587,57 @@ class BaseAgent:
                     }
                 
             elif intent_data['intent'] == 'get_balance':
-                balance = self.ynab_client.get_budget_balance(self.ynab_client.budget_id)
-                return {
-                    'summary': f"Current balance: {balance}",
-                    'balance': balance
-                }
+                try:
+                    # Use configured budget ID from environment
+                    budget_id = self.ynab_client.budget_id
+                    accounts = self.ynab_client.get_accounts(budget_id)
+                    
+                    # Get total budget balance and individual account balances
+                    total_balance = 0
+                    account_balances = []
+                    
+                    for account in accounts:
+                        # Convert milliunits to actual currency
+                        balance = account.get('balance', 0) / 1000.0
+                        cleared_balance = account.get('cleared_balance', 0) / 1000.0
+                        uncleared_balance = account.get('uncleared_balance', 0) / 1000.0
+                        
+                        # Add to total for non-closed accounts
+                        if not account.get('closed', False):
+                            total_balance += balance
+                        
+                        # Add to account balances list
+                        account_balances.append({
+                            'name': account.get('name', 'Unknown Account'),
+                            'type': account.get('type', 'Unknown'),
+                            'balance': f"${balance:.2f}",
+                            'cleared_balance': f"${cleared_balance:.2f}",
+                            'uncleared_balance': f"${uncleared_balance:.2f}",
+                            'closed': account.get('closed', False)
+                        })
+                    
+                    # Format total balance
+                    formatted_total = f"${total_balance:.2f}"
+                    
+                    # Generate a text summary
+                    summary = f"Current total balance: {formatted_total}\n\n"
+                    for account in account_balances:
+                        if not account['closed']:
+                            summary += f"- {account['name']} ({account['type']}): {account['balance']}\n"
+                    
+                    # Return the results
+                    return {
+                        'summary': f"Current total balance: {formatted_total}",
+                        'total_balance': formatted_total,
+                        'accounts': account_balances,
+                        'details': summary
+                    }
+                except Exception as e:
+                    self.logger.error(f"Failed to get balance: {e}")
+                    return {
+                        'summary': f"Failed to retrieve balance: {str(e)}",
+                        'error': {}
+                    }
             
             else:
                 return {

@@ -63,3 +63,5 @@ config.local.json
 *.key
 *.pem
 *.crt 
+# Private individual user cursor rules
+.cursor/rules/_*.mdc

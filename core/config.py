@@ -34,7 +34,7 @@ class ConfigManager:
         cls._config['credentials'] = {
             'ynab': {
                 'api_key': os.getenv('YNAB_API_KEY'),
-                'budget_id': os.getenv('YNAB_BUDGET_ID')
+                'budget_id': os.getenv('YNAB_BUDGET_DEV')
             }
         }
 
@@ -149,6 +149,24 @@ class ConfigManager:
             cls._logger.error("No Gemini API token found")
         
         return token
+
+    @classmethod
+    def get_available_budget_ids(cls) -> list:
+        """
+        Retrieve the list of available YNAB budget IDs from the environment
+        
+        Returns:
+            list: List of budget IDs or empty list if none found
+        """
+        budget_ids_str = os.getenv('YNAB_AVAILABLE_BUDGETS', '')
+        if not budget_ids_str:
+            cls._logger.warning("No available budget IDs found in YNAB_AVAILABLE_BUDGETS environment variable")
+            return []
+            
+        # Split the comma-separated string into a list
+        budget_ids = [bid.strip() for bid in budget_ids_str.split(',') if bid.strip()]
+        cls._logger.debug(f"Found {len(budget_ids)} available budget IDs")
+        return budget_ids
 
     @classmethod
     def setup_logging(cls):
