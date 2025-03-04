@@ -65,3 +65,4 @@ config.local.json
 *.crt 
 # Private individual user cursor rules
 .cursor/rules/_*.mdc
+.cursor/rules/Reference/env-keys.yaml
