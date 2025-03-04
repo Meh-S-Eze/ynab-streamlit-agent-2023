@@ -15,6 +15,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Use proper environment variables for model selection
+GEMINI_MODEL = os.environ.get("GEMINI_REASONER_MODEL")
+OPENAI_MODEL = os.environ.get("GEMINI_OTHER_MODEL")
+
 @click.group()
 def financial_assistant():
     """
@@ -85,6 +89,18 @@ def process(query):
     except Exception as e:
         print("\n🤖 Financial Assistant Response:\n")
         print(f"❌ Error: {str(e)}")
+
+def initialize_ai_components():
+    # Initialize AI components
+    global gemini, openai, ai_transaction_parser
+    
+    gemini = GeminiAPI(model_name=GEMINI_MODEL)
+    logging.info(f"Initialized Gemini API with model: {GEMINI_MODEL}")
+    
+    openai = OpenAIAPI(model_name=OPENAI_MODEL)
+    logging.info(f"Initialized OpenAI API with model: {OPENAI_MODEL}")
+    
+    ai_transaction_parser = PydanticAITransactionParser(payee_cache=payee_cache)
 
 if __name__ == "__main__":
     financial_assistant() 

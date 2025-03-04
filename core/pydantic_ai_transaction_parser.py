@@ -11,6 +11,8 @@ import json
 from functools import lru_cache
 import time
 from tenacity import retry, stop_after_attempt, wait_exponential
+from collections import deque
+import asyncio
 
 from pydantic import Field, BaseModel, ConfigDict
 import pydantic_ai
@@ -45,6 +47,7 @@ class TransactionData(BaseModel):
     """
     amount: AmountData = Field(..., description="The transaction amount details")
     payee_name: str = Field(..., description="The name of the merchant or payee")
+    payee_id: Optional[str] = Field(None, description="The YNAB payee ID for existing payees")
     date: str = Field(..., description="Transaction date in ISO 8601 format (YYYY-MM-DD)")
     memo: Optional[str] = Field(None, description="Optional transaction description")
     category_name: Optional[str] = Field(None, description="Optional category name")
@@ -59,30 +62,42 @@ class PydanticAITransactionParser:
     Transaction parser using Pydantic AI for more robust extraction from natural language
     """
     
-    def __init__(self):
-        """Initialize the transaction parser with configuration"""
-        self.config = ConfigManager()
-        # Configure Gemini client with API key
-        api_key = self.config.get("GEMINI_API_KEY")
-        genai.configure(api_key=api_key)
+    def __init__(self, payee_cache=None):
+        """
+        Initialize the transaction parser with AI model configuration
         
-        # Get model names from environment variables with defaults
-        self.reasoning_model = self.config.get("GEMINI_REASONER_MODEL") or "gemini-1.5-pro"
-        self.other_model = self.config.get("GEMINI_OTHER_MODEL") or "gemini-1.5-flash"
+        Args:
+            payee_cache: Optional cache of payees to use for payee lookup
+        """
+        # Configure logging
+        self.logger = logging.getLogger(__name__)
+        
+        # Initialize rate limiting
+        self.request_times = deque(maxlen=10)
+        
+        # Initialize model config using environment variables
+        self.reasoning_model = os.environ.get('GEMINI_REASONER_MODEL')
+        if not self.reasoning_model:
+            self.logger.warning("GEMINI_REASONER_MODEL not set in environment")
+        
+        # Get API key and region from environment
+        self.api_key = os.getenv('GOOGLE_API_KEY')
+        if not self.api_key:
+            self.logger.warning("GOOGLE_API_KEY not found in environment.")
+            
+        # Initialize YNAB client for account and payee lookups
+        from core.ynab_client import YNABClient
+        self.ynab_client = YNABClient()
+        
+        # Initialize payee cache for lookups
+        self._initialize_payee_cache()
         
         # Initialize Pydantic AI agent with Gemini backend
-        pydantic_ai.settings.OPENAI_API_KEY = api_key  # Not used but required
-        pydantic_ai.settings.GOOGLE_API_KEY = api_key
-        
-        # Initialize YNABClient to get account_id
-        self.ynab_client = YNABClient()
+        pydantic_ai.settings.OPENAI_API_KEY = self.api_key  # Not used but required
+        pydantic_ai.settings.GOOGLE_API_KEY = self.api_key
         
         # Cache for account IDs
         self._default_account_id = None
-        
-        # Initialize logger
-        self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.DEBUG)
         
         # Initialize Gemini model with rate limiting
         self.model = genai.GenerativeModel(self.reasoning_model)
@@ -164,9 +179,10 @@ class PydanticAITransactionParser:
         logger.info(f"Parsing transaction from query: {query}")
             
         try:
-            # Create a Pydantic AI agent
+            # Create a Pydantic AI agent - using model name directly instead of the models.Gemini class
             agent = Agent(
-                system_message="""
+                self.reasoning_model,  # Direct model name instead of models.Gemini
+                system_prompt="""
                 Extract transaction details from the user's input. Follow these rules:
                 1. Extract the exact amount (numbers only)
                 2. Determine if it's an expense (outflow) or income (inflow)
@@ -178,24 +194,25 @@ class PydanticAITransactionParser:
                 
                 For dates, resolve relative terms like "yesterday" or "last week" to actual dates.
                 For payee names, extract only the business or person name without additional words.
+                Don't include words like "at", "from", "to", "for" in the payee name.
+                Extract the clearest, most specific merchant or payee name possible.
                 """,
-                model=models.Gemini(model_name=self.reasoning_model)
+                result_type=TransactionData
             )
             
-            # Create a message structure for the agent
-            messages = [
-                {"role": "user", "content": query}
-            ]
+            # Run the agent to extract structured data
+            result = await agent.run(query)
+            transaction_data = result.data
             
-            # Run the agent and extract structured data
-            result = await agent.arun(
-                messages,
-                output_schema=TransactionData
-            )
+            # Look up payee ID if we have a payee name
+            if transaction_data.payee_name and not transaction_data.payee_id:
+                transaction_data.payee_id = self.get_payee_id(transaction_data.payee_name)
+                if transaction_data.payee_id:
+                    self.logger.info(f"Matched payee '{transaction_data.payee_name}' to existing payee ID: {transaction_data.payee_id}")
             
             # Convert to TransactionCreate format
-            amount_value = result.amount.value
-            is_outflow = result.amount.is_outflow
+            amount_value = transaction_data.amount.value
+            is_outflow = transaction_data.amount.is_outflow
             
             # Format amount with correct sign
             amount = TransactionAmount(
@@ -208,10 +225,10 @@ class PydanticAITransactionParser:
                 # First try to use DateFormatter from date_utils if available
                 try:
                     from core.date_utils import DateFormatter
-                    transaction_date = DateFormatter.parse_date(result.date)
+                    transaction_date = DateFormatter.parse_date(transaction_data.date)
                 except (ImportError, AttributeError):
                     # Fallback to basic parsing if DateFormatter is not available
-                    transaction_date = datetime.strptime(result.date, "%Y-%m-%d").date()
+                    transaction_date = datetime.strptime(transaction_data.date, "%Y-%m-%d").date()
                     
                 logger.debug(f"Parsed date: {transaction_date}")
             except Exception as e:
@@ -224,10 +241,10 @@ class PydanticAITransactionParser:
                 account_id=transaction_data.get('account_id') or self.get_default_account_id(),
                 date=transaction_date,
                 amount=amount,
-                payee_name=result.payee_name,
-                payee_id=result.payee_id,
-                memo=result.memo,
-                category_name=result.category_name
+                payee_name=transaction_data.payee_name if not transaction_data.payee_id else None,  # Only use payee_name if no payee_id
+                payee_id=transaction_data.payee_id,
+                memo=transaction_data.memo,
+                category_name=transaction_data.category_name
             )
             
             logger.info(f"Successfully parsed transaction: {transaction}")
@@ -240,273 +257,38 @@ class PydanticAITransactionParser:
     
     def parse_transaction_sync(self, query: str) -> TransactionCreate:
         """
-        Parse transaction data synchronously from a natural language query
+        Synchronous version of parse_transaction
         
         Args:
-            query (str): Natural language query to parse
+            query (str): Natural language query describing a transaction
             
         Returns:
-            TransactionCreate: Parsed transaction data
+            TransactionCreate: Structured transaction data
             
         Raises:
-            ValueError: If transaction cannot be parsed
+            ValueError: If the transaction cannot be parsed by the AI model
         """
-        # Clean up the query - remove extra spaces, ensure $ signs are preserved
-        query = query.strip()
-        # Log the exact query being processed
-        self.logger.info(f"Raw query before processing: '{query}'")
-        # Ensure $ signs are properly handled (sometimes the shell might strip them)
-        if 'transaction for' in query.lower() and ' at ' in query.lower() and '$' not in query:
-            # Look for patterns like "transaction for 25 at" and insert $ if missing
-            parts = query.split(' at ', 1)
-            if len(parts) == 2:
-                prefix_parts = parts[0].split('for ', 1)
-                if len(prefix_parts) == 2:
-                    value_part = prefix_parts[1].strip()
-                    # Check if value_part is a number or starts with a number
-                    if value_part and (value_part[0].isdigit() or any(value_part.startswith(word) for word in ['twenty', 'thirty', 'forty', 'fifty'])):
-                        # Insert $ before the amount if it's missing
-                        if not value_part.startswith('$'):
-                            fixed_query = f"{prefix_parts[0]}for ${value_part} at {parts[1]}"
-                            self.logger.warning(f"Inserting missing $ sign: '{query}' -> '{fixed_query}'")
-                            query = fixed_query
-        
-        self.logger.debug(f"Parsing transaction from query: query='{query}'")
-        
+        # Get event loop or create one if doesn't exist
         try:
-            # Generate prompt for Gemini
-            prompt = f"""
-You are a transaction parser. Extract transaction details from user input and return a JSON object.
-
-RULES:
-1. Amount must be a positive number (e.g. 25.0)
-   - Remove currency symbols ($ etc)
-   - Convert words to numbers (e.g. "twenty five" -> 25.0)
-   - Must be exact amount as specified
-2. Payee name must be exactly as written in the query
-   - For "at Target" -> use "Target"
-   - For "from Walmart" -> use "Walmart"
-   - For "paid Amazon" -> use "Amazon"
-3. Date should be in YYYY-MM-DD format
-   - Use today if not specified
-   - Convert relative dates (e.g. "yesterday" -> actual date)
-4. Use is_outflow=true for expenses (spending money)
-   - Examples: "spent", "paid", "bought", "purchased"
-5. Use is_outflow=false for income (receiving money)
-   - Examples: "received", "got paid", "earned", "deposited"
-
-Examples:
-
-Input: "Create a transaction for $25 at Target"
-{{
-    "amount": 25.0,
-    "is_outflow": true,
-    "date": "2024-03-19",
-    "payee_name": "Target",
-    "account_id": null,
-    "category_name": null,
-    "memo": null,
-    "cleared": "cleared",
-    "approved": true
-}}
-
-Input: "I got paid $1000 from my employer yesterday"
-{{
-    "amount": 1000.0,
-    "is_outflow": false,
-    "date": "2024-03-18",
-    "payee_name": "employer",
-    "account_id": null,
-    "category_name": "Income",
-    "memo": null,
-    "cleared": "cleared",
-    "approved": true
-}}
-
-Input: "Spent twenty five dollars and fifty cents at Walmart"
-{{
-    "amount": 25.50,
-    "is_outflow": true,
-    "date": "2024-03-19",
-    "payee_name": "Walmart",
-    "account_id": null,
-    "category_name": null,
-    "memo": null,
-    "cleared": "cleared",
-    "approved": true
-}}
-
-Input: "Add transaction for coffee at Starbucks $4.75"
-{{
-    "amount": 4.75,
-    "is_outflow": true,
-    "date": "2024-03-19",
-    "payee_name": "Starbucks",
-    "account_id": null,
-    "category_name": "Dining Out",
-    "memo": "Coffee",
-    "cleared": "cleared",
-    "approved": true
-}}
-
-Input: "Deposited a check for $500 from John"
-{{
-    "amount": 500.0,
-    "is_outflow": false,
-    "date": "2024-03-19",
-    "payee_name": "John",
-    "account_id": null,
-    "category_name": "Income",
-    "memo": "Check deposit",
-    "cleared": "uncleared",
-    "approved": true
-}}
-
-Now parse this query: "{query}"
-Return ONLY the JSON object, no other text.
-"""
-        
-            # Generate response from Gemini with retry logic
-            response_text = self._generate_with_retry(prompt)
-            self.logger.debug(f"Raw Gemini response: {response_text}")
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                raise RuntimeError("Event loop is closed")
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             
-            # Extract JSON from response (handle markdown code blocks if present)
-            json_text = self._extract_json_from_text(response_text)
-            self.logger.debug(f"Extracted JSON: {json_text}")
-            
-            # Parse JSON into dictionary
-            try:
-                transaction_data = json.loads(json_text)
-                self.logger.debug(f"Parsed transaction data: {transaction_data}")
-                
-                # Validate required fields are present and not None
-                required_fields = ['amount', 'payee_name', 'date']
-                missing_fields = []
-                for field in required_fields:
-                    if field not in transaction_data or transaction_data[field] is None:
-                        missing_fields.append(field)
-                
-                if missing_fields:
-                    self.logger.error(f"Missing required fields: {', '.join(missing_fields)}")
-                    self.logger.debug(f"Transaction data: {transaction_data}")
-                    self.logger.debug(f"Original query: '{query}'")
-                    
-                    # Handle missing amount field
-                    if 'amount' in missing_fields:
-                        # Try to extract amount directly from the query as a fallback
-                        amount_match = re.search(r'\$(\d+(\.\d+)?)', query)
-                        if amount_match:
-                            amount_value = float(amount_match.group(1))
-                            self.logger.warning(f"Extracted amount directly from query: ${amount_value}")
-                            transaction_data['amount'] = amount_value
-                            missing_fields.remove('amount')
-                        else:
-                            # Set a default amount
-                            self.logger.warning("Setting default amount of $1")
-                            transaction_data['amount'] = 1.0
-                            missing_fields.remove('amount')
-                    
-                    # If we still have missing fields after recovery attempts, raise error
-                    if missing_fields:
-                        raise ValueError(f"Missing required fields: {', '.join(missing_fields)}")
-                
-                # Handle is_outflow flag
-                is_outflow = transaction_data.get('is_outflow', True)
-                self.logger.debug(f"Transaction direction: is_outflow={is_outflow}")
-                
-                # Create TransactionAmount object
-                try:
-                    # Safely convert the amount value
-                    amount_value = 0.0  # Default value
-                    raw_amount = transaction_data.get('amount')
-                    
-                    if raw_amount is not None:
-                        try:
-                            amount_value = float(raw_amount)
-                            if amount_value <= 0:
-                                self.logger.warning(f"Amount must be positive. Received: {amount_value}. Setting to absolute value.")
-                                amount_value = abs(amount_value) or 0.01  # Use at least 0.01 if amount is 0
-                            if amount_value > 1000000:  # Sanity check - no transactions over $1M
-                                self.logger.warning(f"Amount exceeds maximum allowed value. Capping at $1,000,000.")
-                                amount_value = 1000000.0
-                        except (ValueError, TypeError):
-                            self.logger.error(f"Could not convert amount to float: {raw_amount}")
-                            amount_value = 0.01  # Set a minimal default amount
-                    else:
-                        self.logger.warning("Amount is None, using default value of 0.01")
-                        amount_value = 0.01
-                        
-                    # Convert to milliunits (multiply by 1000)
-                    milliunit_amount = int(amount_value * 1000)
-                    
-                    amount = TransactionAmount(
-                        amount=Decimal(str(milliunit_amount)),
-                        is_outflow=is_outflow
-                    )
-                    self.logger.debug(f"Transaction amount: amount_milliunits={amount.amount}, is_outflow={amount.is_outflow}")
-                except Exception as e:
-                    self.logger.error(f"Failed to process amount: {e}")
-                    # Create a default amount as fallback
-                    milliunit_amount = 10  # 0.01 in milliunits
-                    amount = TransactionAmount(
-                        amount=Decimal(str(milliunit_amount)),
-                        is_outflow=is_outflow
-                    )
-                    self.logger.warning(f"Using fallback amount: {amount.amount}")
-                
-                # Parse transaction date
-                date_str = transaction_data.get('date')
-                if not date_str:
-                    date_str = datetime.now().strftime("%Y-%m-%d")
-                    self.logger.debug(f"No date provided, using today: date={date_str}")
-                else:
-                    self.logger.debug(f"Using provided date: date={date_str}")
-                
-                # Convert date string to date object
-                try:
-                    # First try to use DateFormatter from date_utils if available
-                    try:
-                        from core.date_utils import DateFormatter
-                        transaction_date = DateFormatter.parse_date(date_str)
-                    except (ImportError, AttributeError):
-                        # Fallback to basic parsing if DateFormatter is not available
-                        transaction_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                        
-                    self.logger.debug(f"Parsed date: {transaction_date}")
-                except Exception as e:
-                    # If date parsing fails, use today's date
-                    self.logger.warning(f"Date parsing failed: {e}. Using today's date")
-                    transaction_date = datetime.now().date()
-                
-                # Create TransactionCreate object with validated data
-                transaction = TransactionCreate(
-                    account_id=transaction_data.get('account_id') or self.get_default_account_id(),
-                    date=transaction_date,
-                    amount=amount,
-                    payee_name=transaction_data['payee_name'],
-                    payee_id=transaction_data.get('payee_id'),
-                    category_name=transaction_data.get('category_name'),
-                    memo=transaction_data.get('memo'),
-                    cleared=transaction_data.get('cleared'),
-                    approved=transaction_data.get('approved', True)
-                )
-                self.logger.debug(f"Created transaction object: account_id='{transaction.account_id}', date='{transaction.date}', "
-                                f"payee_name='{transaction.payee_name}', category_name='{transaction.category_name}', "
-                                f"amount={transaction.amount.amount}, is_outflow={transaction.amount.is_outflow}")
-                
-                return transaction
-                
-            except json.JSONDecodeError as e:
-                self.logger.error(f"Failed to parse JSON response: error='{str(e)}', json_text='{json_text}'")
-                raise ValueError(f"Failed to parse transaction: Invalid JSON response from model: {str(e)}")
-            except Exception as e:
-                self.logger.error(f"Transaction parsing failed: error='{str(e)}', query='{query}'")
-                raise ValueError(f"Failed to parse transaction: {str(e)}")
-            
+        # Run the async function in the event loop
+        try:
+            result = loop.run_until_complete(self.parse_transaction(query))
+            return result
         except Exception as e:
-            self.logger.error(f"Transaction parsing failed: error='{str(e)}', query='{query}'")
-            raise ValueError(f"Failed to parse transaction: {str(e)}")
-
+            # No fallback - per architecture principles, we focus on improving AI parsing
+            self.logger.error(f"Error in AI transaction parsing: {str(e)}")
+            # Return a more helpful error message
+            error_msg = f"Unable to parse transaction using AI model: {str(e)}"
+            self.logger.info(f"Raising error: {error_msg}")
+            raise ValueError(error_msg)
+    
     def _extract_json_from_text(self, text: str) -> str:
         """
         Extract JSON content from text, handling markdown code blocks
@@ -531,3 +313,206 @@ Return ONLY the JSON object, no other text.
         
         # If no code blocks, return the original text stripped
         return text.strip() 
+
+    def _initialize_payee_cache(self):
+        """Initialize the payee cache from YNAB for lookups"""
+        try:
+            self.logger.info("Initializing payee cache")
+            # This will trigger the YNAB client to build its internal payee cache
+            self.ynab_client._initialize_payee_cache()
+            self.logger.info("Payee cache initialized")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize payee cache: {str(e)}")
+    
+    def get_payee_id(self, payee_name: str) -> Optional[str]:
+        """
+        Look up a payee ID by name from the YNAB cache
+        
+        Args:
+            payee_name (str): Name of the payee to look up
+            
+        Returns:
+            Optional[str]: Payee ID if found, None otherwise
+        """
+        if not payee_name:
+            return None
+            
+        try:
+            # Use the YNAB client's get_payee_id method
+            payee_id = self.ynab_client.get_payee_id(payee_name)
+            if payee_id:
+                self.logger.debug(f"Found payee ID for '{payee_name}': {payee_id}")
+            else:
+                self.logger.debug(f"No payee ID found for '{payee_name}'")
+            return payee_id
+        except Exception as e:
+            self.logger.error(f"Error looking up payee ID: {str(e)}")
+            return None
+            
+    def get_payee_suggestions(self, partial_name: str, max_results: int = 5) -> List[Dict[str, str]]:
+        """
+        Get suggestions for payees based on partial name match
+        
+        Args:
+            partial_name (str): Partial payee name to match
+            max_results (int): Maximum number of results to return
+            
+        Returns:
+            List[Dict[str, str]]: List of payee matches with id and name
+        """
+        try:
+            if not partial_name or len(partial_name) < 2:
+                return []
+                
+            # Get all payees from YNAB
+            payees = self.ynab_client.get_payees()
+            
+            # Filter payees by partial name match (case insensitive)
+            partial_name_lower = partial_name.lower()
+            matches = [
+                {"id": p["id"], "name": p["name"]}
+                for p in payees
+                if not p.get("deleted", False) 
+                and partial_name_lower in p.get("name", "").lower()
+            ]
+            
+            # Sort by closest match and limit results
+            matches.sort(key=lambda p: p["name"].lower().find(partial_name_lower))
+            return matches[:max_results]
+            
+        except Exception as e:
+            self.logger.error(f"Error getting payee suggestions: {str(e)}")
+            return [] 
+
+    def gen_transaction(self, model, query):
+        """
+        Generate a transaction from a natural language query using Gemini model
+        
+        Args:
+            model: Gemini model to use
+            query: Natural language query to parse
+            
+        Returns:
+            dict: Parsed transaction data
+        """
+        # Define system prompt for transaction parsing
+        prompt = f"""You are a YNAB (You Need A Budget) transaction parser specializing in extracting structured financial data from natural language inputs. Your task is to accurately parse transaction details and format them as a valid JSON object.
+
+USER TRANSACTION INPUT:
+"{query}"
+
+TRANSACTION PARSING RULES:
+
+1. AMOUNT EXTRACTION:
+   - Must be a positive number (e.g., 25.0)
+   - Remove currency symbols ($ etc.) from final value
+   - Convert words to numbers ("twenty five dollars" → 25.0)
+   - Preserve exact decimal precision if specified
+   - Extract the amount exactly as mentioned in the query
+
+2. PAYEE/MERCHANT IDENTIFICATION:
+   - Extract only the merchant/business name
+   - For "at Target" → use "Target"
+   - For "from Walmart" → use "Walmart"
+   - For "paid Amazon" → use "Amazon"
+   - Remove unnecessary details but keep full business name
+   - Use the most specific merchant name possible (e.g., "Walmart Supercenter" instead of just "Walmart")
+   - Extract the clearest possible payee name for matching with existing payees in YNAB
+
+3. DATE FORMATTING:
+   - Use YYYY-MM-DD format (ISO 8601)
+   - Use today's date if no date is specified
+   - Convert relative dates ("yesterday" → the actual date)
+   - Convert month names to numbers ("January 5" → "2023-01-05")
+
+4. TRANSACTION DIRECTION:
+   - is_outflow=true for expenses (spending money)
+     * Keywords: "spent", "paid", "bought", "purchased", "paid for"
+   - is_outflow=false for income (receiving money)
+     * Keywords: "received", "got paid", "earned", "deposited", "refunded"
+   - Default to is_outflow=true if unclear
+
+5. ADDITIONAL FIELDS:
+   - memo: Brief description of what the transaction was for
+   - category_name: Appropriate budget category (if determinable)
+   - confidence: Your confidence in the parsing (0.0 to 1.0)
+
+EXAMPLE TRANSACTION INPUTS AND OUTPUTS:
+
+Example 1 - Basic Purchase:
+Input: "I spent $45.99 at Target yesterday"
+{
+  "amount": {
+    "value": 45.99,
+    "is_outflow": true
+  },
+  "payee_name": "Target",
+  "date": "2023-06-15",
+  "memo": "Purchase at Target",
+  "category_name": "Shopping",
+  "confidence": 0.95
+}
+
+Example 2 - Income Transaction:
+Input: "Received $1,250 salary deposit from Acme Corp"
+{
+  "amount": {
+    "value": 1250.0,
+    "is_outflow": false
+  },
+  "payee_name": "Acme Corp",
+  "date": "2023-06-16",
+  "memo": "Salary deposit",
+  "category_name": "Income",
+  "confidence": 0.98
+}
+
+Example 3 - Specific Date:
+Input: "Paid electric bill $89.50 on April 5"
+{
+  "amount": {
+    "value": 89.50,
+    "is_outflow": true
+  },
+  "payee_name": "Electric Company",
+  "date": "2023-04-05",
+  "memo": "Electric bill payment",
+  "category_name": "Utilities",
+  "confidence": 0.90
+}
+
+Example 4 - Amount in Words:
+Input: "Dinner at Mario's Restaurant cost twenty-five dollars"
+{
+  "amount": {
+    "value": 25.0,
+    "is_outflow": true
+  },
+  "payee_name": "Mario's Restaurant",
+  "date": "2023-06-16",
+  "memo": "Dinner expense",
+  "category_name": "Dining Out",
+  "confidence": 0.88
+}
+
+EXPECTED JSON RESPONSE FORMAT:
+{
+  "amount": {
+    "value": 0.0,  // Numeric value as float
+    "is_outflow": true  // Boolean: true for expenses, false for income
+  },
+  "payee_name": "Merchant Name",  // String
+  "date": "YYYY-MM-DD",  // ISO 8601 formatted date as string
+  "memo": "Transaction description",  // String
+  "category_name": "Budget Category",  // String
+  "confidence": 0.0  // Float between 0 and 1
+}
+
+IMPORTANT REQUIREMENTS:
+- Return ONLY the valid JSON object with no additional text or explanation
+- Ensure all required fields are included and properly formatted
+- Use null for truly optional fields if information is not present or unclear
+- Format all numeric values as actual numbers, not strings
+- Do not include any Markdown formatting or code block markers
+- Extract the clearest, most specific merchant name possible for matching with existing YNAB payees
+""" 
