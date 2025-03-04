@@ -21,11 +21,17 @@ wheels/
 *.egg
 MANIFEST
 
-# Virtual Environment
+# Virtual Environment - expanded
 venv/
 env/
 .env/
 .venv/
+ENV/
+env.bak/
+venv.bak/
+**/site-packages/
+**/*.cpython-*-darwin.so
+**/*.dylib
 
 # Streamlit
 .streamlit/
@@ -66,3 +72,7 @@ config.local.json
 # Private individual user cursor rules
 .cursor/rules/_*.mdc
 .cursor/rules/Reference/env-keys.yaml
+
+# Large files to consider for Git LFS
+*.so
+*.dylib
