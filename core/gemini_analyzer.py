@@ -819,53 +819,112 @@ class GeminiSpendingAnalyzer:
         # Safely handle existing categories
         existing_categories_str = json.dumps(existing_categories or [])
         
-        return f"""You are an expert financial categorization AI. Your task is to categorize transactions with high precision.
+        # Format transaction data for the prompt
+        transaction_data = json.dumps([
+            {
+                "id": t.get('id', ''),
+                "description": t.get('description', ''),
+                "amount": t.get('amount', 0),
+                "date": t.get('date', '')
+            } for t in transactions[:20]  # Limit to first 20 transactions
+        ], indent=2)
+        
+        return f"""You are an expert financial categorization AI specially designed for YNAB (You Need A Budget). Your task is to categorize financial transactions with extremely high precision and consistency.
+
+TRANSACTION CATEGORIZATION TASK:
+I have {len(transactions[:20])} transactions that need to be categorized according to YNAB categories. Each transaction needs to be assigned the most appropriate category.
 
 CRITICAL RESPONSE REQUIREMENTS:
-1. MUST respond ONLY in VALID JSON format
-2. Create a JSON ARRAY of categorization objects
-3. EACH object MUST have EXACTLY these keys:
-   - "id": Transaction ID (string)
-   - "category": Suggested category name (string)
-   - "confidence": Decimal confidence score between 0 and 1 (float)
-   - "reasoning": Brief explanation of categorization (string)
+1. Your response MUST be ONLY valid JSON - an array of objects
+2. Each object in the array MUST contain EXACTLY these fields:
+   - "id": The transaction ID from the input (string)
+   - "category": Your suggested category name (string)
+   - "confidence": A decimal score between 0.0 and 1.0 representing your confidence (float)
+   - "reasoning": A brief explanation for your categorization choice (string)
 
-IMPORTANT GUIDELINES:
-- Analyze transaction description, amount, and context
-- Use existing categories as reference
-- If unsure, use 'Uncategorized' with low confidence
-- Confidence reflects categorization certainty
-- Provide clear, concise reasoning
+CATEGORIZATION INTELLIGENCE GUIDELINES:
+- Analyze the transaction description thoroughly for merchant names, services, and products
+- Consider transaction amount as a context clue (large amounts may indicate different categories than small ones)
+- Use transaction date as context (seasonal purchases may indicate specific categories)
+- Respect recurring transaction patterns (same merchant should typically get same category)
+- When multiple categories could apply, choose the most specific one
+- If genuinely uncertain, use "Uncategorized" with an appropriate confidence level
+- Confidence scores should accurately reflect your certainty (use lower scores when uncertain)
 
-Existing Categories: {existing_categories_str}
+EXISTING YNAB CATEGORIES TO USE:
+{existing_categories_str}
 
-Transactions to Categorize:
-{json.dumps([
-    {{
-        "id": t.get('id', ''),
-        "description": t.get('description', ''),
-        "amount": t.get('amount', 0),
-        "date": t.get('date', '')
-    }} for t in transactions[:20]  # Limit to first 20 transactions
-])}
+TRANSACTIONS TO CATEGORIZE:
+{transaction_data}
 
-STRICT EXAMPLE RESPONSE FORMAT:
+RESPONSE FORMAT EXAMPLES:
+
+Example 1 - High Confidence Categorizations:
 [
-    {{
-        "id": "transaction_123",
-        "category": "Groceries",
-        "confidence": 0.85,
-        "reasoning": "Purchased at Kroger, typical grocery store transaction"
-    }},
-    {{
-        "id": "transaction_456",
-        "category": "Dining Out",
-        "confidence": 0.65,
-        "reasoning": "Transaction at restaurant suggests eating out"
-    }}
+  {{
+    "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "category": "Groceries",
+    "confidence": 0.95,
+    "reasoning": "Transaction at Kroger is clearly a grocery store purchase, amount of $78.34 is typical for grocery shopping"
+  }},
+  {{
+    "id": "7b52009b-64fd-4157-8e73-f3e1de347ac4",
+    "category": "Dining Out",
+    "confidence": 0.92,
+    "reasoning": "Purchase at 'Joe's Restaurant' on Friday evening is clearly dining out, transaction amount of $45.23 is typical restaurant bill"
+  }},
+  {{
+    "id": "bd307a3e-c17a-4ded-aee0-8a492c957dad",
+    "category": "Transportation",
+    "confidence": 0.98,
+    "reasoning": "Shell Gas Station purchase of $38.67 is clearly for fuel, previous transactions at Shell were also categorized as Transportation"
+  }}
 ]
 
-CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
+Example 2 - Mix of Confidence Levels:
+[
+  {{
+    "id": "fa3ecd90-db54-4203-8b75-2794ded779b6",
+    "category": "Shopping",
+    "confidence": 0.88,
+    "reasoning": "Amazon purchase with typical shopping amount of $32.99"
+  }},
+  {{
+    "id": "f1abd670-39d0-4218-9020-ed3782de936e",
+    "category": "Entertainment",
+    "confidence": 0.75,
+    "reasoning": "Netflix subscription of $13.99, matches typical streaming service cost and previous entertainment transactions"
+  }},
+  {{
+    "id": "1574bddb-e0b6-4a0f-879f-6ef1e994593e",
+    "category": "Uncategorized",
+    "confidence": 0.45,
+    "reasoning": "Payment to 'ABC Services' of $149.99 could match multiple categories (Software, Professional Services, or Subscriptions); insufficient context to determine with high confidence"
+  }}
+]
+
+Example 3 - Specialized Categories:
+[
+  {{
+    "id": "0716d9b0-5738-4d93-b23d-68ec8c55c4a3",
+    "category": "Medical",
+    "confidence": 0.96,
+    "reasoning": "Payment to City Hospital of $250.00 is clearly medical related"
+  }},
+  {{
+    "id": "9e66d1b4-b07e-4ff9-a7a9-4668d571a3bc",
+    "category": "Home Maintenance",
+    "confidence": 0.89,
+    "reasoning": "Home Depot purchase of $156.78 is likely for home repair or maintenance"
+  }}
+]
+
+IMPORTANT REMINDERS:
+- DO NOT add any explanatory text, markdown formatting, or code blocks
+- Return ONLY the properly formatted JSON array
+- Ensure each transaction ID from the input exists in your output
+- Strictly follow the YNAB categories provided - do not invent new categories
+- Your response must be parseable by the Python json.loads() function
 """
 
     def _parse_categorization_response(self, response_text: str) -> Dict:
@@ -978,16 +1037,122 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
     
     def _create_prompt(self, transactions: List[Dict]) -> str:
         """Create a structured prompt for Gemini"""
-        return f"""Analyze the following financial transactions:
-        {transactions}
+        # Format transaction data for readability
+        transaction_data = json.dumps(transactions, indent=2)
+        
+        return f"""You are a YNAB (You Need A Budget) financial analysis expert. Your task is to analyze a set of financial transactions and provide meaningful insights.
 
-        Provide a JSON response with:
-        - total_spent: Total amount spent
-        - category_breakdown: Spending by category
-        - unusual_transactions: Any transactions that seem out of the ordinary
+FINANCIAL TRANSACTION ANALYSIS TASK:
+Analyze the following {len(transactions)} financial transactions and create a comprehensive spending analysis.
 
-        Format the response as a valid JSON object."""
-    
+TRANSACTION DATA:
+{transaction_data}
+
+REQUIRED ANALYSIS COMPONENTS:
+
+1. TOTAL SPENT CALCULATION:
+   - Sum all outflow transactions (positive amounts represent outflows in this dataset)
+   - Exclude any inflow transactions
+   - Provide total as a floating-point number
+
+2. CATEGORY BREAKDOWN:
+   - Group transactions by category
+   - Calculate total amount spent in each category
+   - Include percentage of total spending for each category
+   - Sort categories from highest to lowest spending
+
+3. UNUSUAL TRANSACTION DETECTION:
+   - Identify transactions that appear abnormal
+   - Consider factors like: unusually large amounts, atypical merchants, spending frequency
+   - Provide reasoning for why each transaction is flagged as unusual
+   - Limit to the most significant unusual transactions (max 5)
+
+EXAMPLE ANALYSES FOR DIFFERENT TRANSACTION SETS:
+
+Example 1 - Typical Monthly Spending:
+{{
+  "total_spent": 1854.76,
+  "category_breakdown": {{
+    "Housing": 950.00,
+    "Groceries": 425.32,
+    "Dining Out": 215.67,
+    "Transportation": 165.88,
+    "Entertainment": 97.89
+  }},
+  "unusual_transactions": [
+    {{
+      "id": "tx_1234567",
+      "amount": 215.67,
+      "description": "FANCY RESTAURANT",
+      "reason": "Unusually high restaurant bill, 300% above average dining spending"
+    }}
+  ]
+}}
+
+Example 2 - High Discretionary Spending:
+{{
+  "total_spent": 3241.50,
+  "category_breakdown": {{
+    "Shopping": 1250.75,
+    "Entertainment": 875.25,
+    "Dining Out": 625.50,
+    "Housing": 490.00
+  }},
+  "unusual_transactions": [
+    {{
+      "id": "tx_9876543",
+      "amount": 899.99,
+      "description": "BEST BUY ELECTRONICS",
+      "reason": "Large one-time electronics purchase significantly above normal spending patterns"
+    }},
+    {{
+      "id": "tx_5436789",
+      "amount": 350.25,
+      "description": "CONCERT TICKETS",
+      "reason": "High entertainment expense, unusual merchant compared to normal spending habits"
+    }}
+  ]
+}}
+
+Example 3 - Essential Expenses Only:
+{{
+  "total_spent": 1575.45,
+  "category_breakdown": {{
+    "Housing": 875.00,
+    "Groceries": 325.45,
+    "Utilities": 225.00,
+    "Transportation": 150.00
+  }},
+  "unusual_transactions": []
+}}
+
+STRICT OUTPUT FORMAT - JSON OBJECT:
+{{
+  "total_spent": 1234.56,
+  "category_breakdown": {{
+    "Groceries": 350.25,
+    "Dining Out": 210.75,
+    "Transportation": 150.00,
+    "Entertainment": 75.50
+  }},
+  "unusual_transactions": [
+    {{
+      "id": "transaction_123",
+      "amount": 299.99,
+      "description": "BEST BUY ELECTRONICS",
+      "reason": "Large one-time purchase significantly above average spending pattern"
+    }}
+  ]
+}}
+
+RESPONSE REQUIREMENTS:
+- Return ONLY valid, parseable JSON
+- Follow the exact structure of the example format
+- Ensure all numbers are properly formatted as numbers, not strings
+- Do not include any explanatory text outside the JSON object
+- No markdown formatting or code blocks
+"""
+
     def _parse_response(self, response_text: str) -> Dict:
         """Parse Gemini's text response into a dictionary"""
         # Implement robust JSON parsing with error handling
@@ -1083,13 +1248,11 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
             Dict with update result
         """
         try:
-            # Use YNABClient to update the transaction category
-            return self.ynab_client.update_transaction_categories(
-                budget_id=budget_id,
-                transactions=[{
-                    'id': transaction_id,
-                    'category_name': category_name
-                }]
+            # Use the new method that preserves AI tagging in memo field
+            return self.ynab_client.update_transaction_category_with_ai_tag(
+                transaction_id=transaction_id,
+                category_name=category_name,
+                budget_id=budget_id
             )
             
         except Exception as e:
@@ -1264,46 +1427,106 @@ CRITICAL: Ensure VALID JSON. NO EXTRA TEXT. NO MARKDOWN.
         amount_match = re.search(r'\$?(\d+(?:\.\d{1,2})?)', query)
         amount = amount_match.group(1) if amount_match else '50.00'
         
-        return f"""
-Parse the following transaction description and return a STRICTLY FORMATTED JSON object:
+        # Format today's date for the prompt
+        today_date = date.today().strftime('%Y-%m-%d')
+        
+        return f"""You are a specialized YNAB (You Need A Budget) financial transaction parser. Your task is to interpret natural language descriptions of financial transactions and convert them into properly structured data.
 
-Transaction Description: "{query}"
+TRANSACTION DESCRIPTION TO PARSE:
+"{query}"
 
-SPECIFIC PARSING REQUIREMENTS:
-- EXTRACT EXACT AMOUNT: {amount}
-- IDENTIFY PAYEE/MERCHANT
-- USE TODAY'S DATE IF NO SPECIFIC DATE MENTIONED
+TRANSACTION PARSING REQUIREMENTS:
 
-JSON SCHEMA REQUIREMENTS:
-- MUST be valid, parseable JSON
-- MONETARY AMOUNT: {amount}
-- Dates in YYYY-MM-DD format
-- REQUIRED FIELDS: amount, payee_name, date
-- OPTIONAL FIELDS: memo, category_name, is_outflow
+1. MONETARY AMOUNT: 
+   - Extracted amount: ${amount}
+   - Use this EXACT amount in your response
+   - If the amount appears incorrect based on the description, still use ${amount}
 
-EXAMPLE OUTPUT:
+2. DATE HANDLING:
+   - If a specific date is mentioned in the description, use it
+   - Otherwise, use today's date: {today_date}
+   - Format ALL dates as YYYY-MM-DD (ISO 8601)
+
+3. TRANSACTION DIRECTION:
+   - Default is outflow (spending money)
+   - Only mark as inflow (receiving money) if clearly indicated by words like: received, income, payment, refund, deposit
+   - Use "is_outflow": true for expenses
+   - Use "is_outflow": false for income/refunds
+
+4. PAYEE IDENTIFICATION:
+   - Extract the merchant/payee name from the description
+   - Remove unnecessary details but keep distinctive business name
+   - If multiple businesses mentioned, use the primary one where money was spent
+
+5. CATEGORY ASSIGNMENT:
+   - Assign the most appropriate YNAB budget category
+   - Use standard categories like: Groceries, Dining Out, Transportation, Bills, Shopping, Entertainment
+   - Be specific when possible (e.g., "Gas" instead of "Transportation" for fuel purchases)
+
+EXAMPLE OUTPUTS FOR DIFFERENT TRANSACTION TYPES:
+
+Example 1 - Basic Expense:
+Input: "I spent $35.99 at Target for household supplies"
 {{
-    "amount": {amount},
+    "amount": 35.99,
     "payee_name": "Target",
-    "date": "{date.today().strftime('%Y-%m-%d')}",
+    "date": "{today_date}",
     "is_outflow": true,
-    "memo": "Shopping trip",
+    "memo": "Household supplies purchase",
+    "category_name": "Household Goods"
+}}
+
+Example 2 - With Specific Date:
+Input: "Paid $120.50 for electric bill on May 15"
+{{
+    "amount": 120.50,
+    "payee_name": "Electric Company",
+    "date": "2023-05-15",
+    "is_outflow": true,
+    "memo": "Monthly electric bill payment",
+    "category_name": "Utilities"
+}}
+
+Example 3 - Income Transaction:
+Input: "Received my salary deposit of $2500 from Acme Corp"
+{{
+    "amount": 2500.00,
+    "payee_name": "Acme Corp",
+    "date": "{today_date}",
+    "is_outflow": false,
+    "memo": "Salary payment",
+    "category_name": "Income"
+}}
+
+Example 4 - Ambiguous Transaction Made Clear:
+Input: "Amazon order $64.23 for books and office supplies"
+{{
+    "amount": 64.23,
+    "payee_name": "Amazon",
+    "date": "{today_date}",
+    "is_outflow": true,
+    "memo": "Books and office supplies",
     "category_name": "Shopping"
 }}
 
-PARSING INSTRUCTIONS:
-1. Use the SPECIFIED AMOUNT: {amount}
-2. Identify payee/merchant name from description
-3. Use today's date
-4. Determine if transaction is an expense (outflow)
-5. Add a descriptive memo if possible
-6. Suggest an appropriate category
+FOR YOUR SPECIFIC TRANSACTION:
+{{
+    "amount": {amount},
+    "payee_name": "Business Name",
+    "date": "{today_date}",
+    "is_outflow": true,
+    "memo": "Brief description",
+    "category_name": "Appropriate Category"
+}}
 
-IMPORTANT: 
-- RETURN ONLY THE JSON
-- NO MARKDOWN CODE BLOCKS
-- NO ADDITIONAL TEXT
-- ENSURE NUMERIC PRECISION
+IMPORTANT OUTPUT RULES:
+- Return ONLY the valid JSON object
+- NO explanatory text before or after
+- NO markdown code blocks
+- NO comments
+- Ensure all field names exactly match the example
+- Double-check that the JSON is valid and parseable
+- Do not include any fields not shown in the example
 """
 
     def parse_transaction(self, transaction_description: str) -> TransactionCreate:
@@ -1370,14 +1593,10 @@ IMPORTANT:
             amount_value = amount_data.get('value')
             is_outflow = amount_data.get('is_outflow', True)
             
-            # Fallback Stage 1: Regex Amount Extraction
+            # Validate amount - a critical field
             if not amount_value:
-                try:
-                    amount_value = monetary_parser.parse_amount(transaction_description)
-                    is_outflow = amount_value < 0
-                except Exception as e:
-                    self.logger.warning(f"Regex amount parsing failed: {e}")
-                    raise
+                self.logger.error("Missing required amount value in AI parsed response")
+                raise ValueError("AI parsing failed to extract transaction amount")
             
             # Prepare transaction data
             transaction_data = {
@@ -1402,44 +1621,13 @@ IMPORTANT:
             
             return transaction
         
-        except Exception as primary_error:
-            # Fallback Stage 2: Comprehensive Error Recovery
-            self.logger.warning(f"Primary parsing failed: {primary_error}")
-            
-            try:
-                # Attempt manual parsing with regex and heuristics
-                amount = monetary_parser.parse_amount(transaction_description)
-                is_outflow = amount < 0
-                
-                # Extract payee using simple heuristics
-                payee_match = re.search(r'at\s+([A-Za-z\s]+)', transaction_description, re.IGNORECASE)
-                payee_name = payee_match.group(1).strip() if payee_match else 'Unknown'
-                
-                # Create transaction with fallback data
-                fallback_transaction = TransactionCreate(
-                    account_id=os.getenv('DEFAULT_ACCOUNT_ID', ''),
-                    date=date.today(),
-                    amount=TransactionAmount(
-                        amount=abs(float(amount)),
-                        is_outflow=is_outflow
-                    ),
-                    payee_name=payee_name,
-                    memo=transaction_description
-                )
-                
-                # Log fallback parsing
-                self.logger.warning(
-                    f"Fallback parsing successful: {fallback_transaction.payee_name}, "
-                    f"Amount: {'$' if not fallback_transaction.amount.is_outflow else '-$'}{fallback_transaction.amount.amount}"
-                )
-                
-                return fallback_transaction
-            
-            except Exception as fallback_error:
-                # Final error handling
-                self.logger.error(f"Transaction parsing completely failed: {fallback_error}")
-                raise ValueError(f"Could not parse transaction: {transaction_description}")
-    
+        except Exception as e:
+            # No fallback parsing - per architecture principles
+            self.logger.error(f"AI transaction parsing failed: {e}")
+            error_details = f"Could not parse transaction using AI model: {str(e)}"
+            self.logger.info(f"Raising error: {error_details}")
+            raise ValueError(error_details)
+
     def _parse_ai_transaction_response(self, response_text: str) -> Dict:
         """
         Parse and validate AI transaction response

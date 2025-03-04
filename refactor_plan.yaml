@@ -1,0 +1,344 @@
+# YNAB Codebase Refactoring Plan
+version: 1.0
+description: Modularization plan for YNAB integration focusing on maintainability and code organization
+
+# Overall architecture structure
+architecture:
+  pattern: "Layered Architecture"
+  layers:
+    - name: "api_clients"
+      description: "Base API communication with YNAB"
+    - name: "services"
+      description: "Business logic and operations"
+    - name: "models"
+      description: "Data structures and validation"
+    - name: "utils"
+      description: "Common utilities and helpers"
+    - name: "prompts"
+      description: "AI prompt management following PydanticAI patterns"
+
+# New directory structure
+directory_structure:
+  core:
+    api:
+      - base_client.py  # Authentication, common request handling, error handling
+      - categories_api.py  # Categories-specific endpoints
+      - transactions_api.py  # Transactions-specific endpoints
+      - budgets_api.py  # Budgets-specific endpoints
+      - accounts_api.py  # Accounts-specific endpoints
+    
+    services:
+      - category_service.py  # Category matching, filtering, and processing
+      - transaction_service.py  # Transaction operations including AI tagging
+      - budget_service.py  # Budget operations and analysis
+      - ai_tagging_service.py  # AI tagging business logic
+    
+    models:
+      - transaction.py  # Transaction data models
+      - category.py  # Category data models
+      - budget.py  # Budget data models
+      - account.py  # Account data models
+    
+    utils:
+      - caching.py  # Centralized caching mechanism
+      - circuit_breaker.py  # Circuit breaker for fault tolerance
+      - api_utils.py  # Common API utilities
+      - date_utils.py  # Date handling utilities
+    
+    prompts:
+      - base_prompts.py  # Reusable prompt templates
+      - transaction_prompts.py  # Transaction-specific prompts
+      - category_prompts.py  # Category matching prompts
+      - examples/  # Directory for example data
+        - transaction_examples.json
+        - category_examples.json
+    
+    # Keep existing files that don't need refactoring
+    - container.py  # Dependency injection container (update to use new modules)
+    - credentials.py  # Credentials management
+    - config.py  # Configuration management
+
+# Implementation phases
+implementation_phases:
+  - phase: 1
+    name: "Setup Directory Structure"
+    tasks:
+      - "Create new directories"
+      - "Setup initial empty files"
+  
+  - phase: 2
+    name: "Extract Data Models"
+    tasks:
+      - "Define transaction models"
+      - "Define category models"
+      - "Define budget models"
+  
+  - phase: 3
+    name: "Implement Base API Client"
+    tasks:
+      - "Create base client with authentication"
+      - "Implement common request handling"
+      - "Implement error handling and circuit breaker"
+  
+  - phase: 4
+    name: "Implement Specialized API Clients"
+    tasks:
+      - "Create transactions API client"
+      - "Create categories API client"
+      - "Create budgets API client"
+  
+  - phase: 5
+    name: "Extract Business Logic into Services"
+    tasks:
+      - "Implement category service with matching algorithm"
+      - "Implement transaction service with AI tagging support"
+      - "Implement budget service with analysis capabilities"
+      - "Create dedicated AI tagging service"
+  
+  - phase: 6
+    name: "Implement Utilities"
+    tasks:
+      - "Create centralized caching mechanism"
+      - "Implement API utilities"
+      - "Refactor date utilities"
+  
+  - phase: 7
+    name: "Implement Prompt Management"
+    tasks:
+      - "Create prompt base classes"
+      - "Extract prompt examples to JSON files"
+      - "Implement specialized prompt classes"
+      - "Update agents to use new prompt system"
+  
+  - phase: 8
+    name: "Update Container"
+    tasks:
+      - "Update dependency injection container"
+      - "Wire up new services"
+  
+  - phase: 9
+    name: "Clean Up"
+    tasks:
+      - "Remove obsolete code"
+      - "Update documentation"
+
+# Key components to implement
+key_components:
+  base_client:
+    features:
+      - "Authentication management"
+      - "Common request/response handling"
+      - "Error handling with logging"
+      - "Circuit breaker integration"
+      - "Rate limiting support"
+    methods:
+      - "get(endpoint, params)"
+      - "post(endpoint, data)"
+      - "put(endpoint, data)"
+      - "delete(endpoint)"
+
+  caching_system:
+    features:
+      - "Centralized cache management"
+      - "Support for different cache types"
+      - "Time-to-live (TTL) support"
+      - "Cache invalidation hooks"
+    methods:
+      - "cached_method(func, maxsize, ttl)"
+      - "clear_cache(cache_name)"
+      - "get_cached_value(key)"
+      - "set_cached_value(key, value, ttl)"
+
+  ai_tagging_service:
+    features:
+      - "AI tag format management"
+      - "Tag detection and parsing"
+      - "Tag generation for different actions"
+    methods:
+      - "apply_ai_tag(memo, action_type)"
+      - "detect_ai_tag(memo)"
+      - "update_ai_tag(memo, new_action)"
+      - "has_ai_tag(memo)"
+
+  transaction_service:
+    features:
+      - "Single transaction operations"
+      - "Bulk transaction operations"
+      - "Transaction categorization"
+      - "AI tag preservation"
+    methods:
+      - "update_transaction_category(transaction_id, category_name)"
+      - "bulk_update_categories(transactions)"
+      - "get_transaction_by_id(transaction_id)"
+      - "search_transactions(query_params)"
+
+  category_service:
+    features:
+      - "Category matching algorithm"
+      - "Category lookup by name"
+      - "Category hierarchy management"
+    methods:
+      - "get_category_by_name(name)"
+      - "find_best_category_match(category_name)"
+      - "get_category_hierarchy()"
+      - "get_subcategories(parent_id)"
+
+  prompt_management_system:
+    features:
+      - "Prompt template base classes"
+      - "Example management and loading"
+      - "Dynamic prompt generation"
+      - "Prompt versioning support"
+    components:
+      base_prompt_class:
+        description: "Base class for all prompt types with common functionality"
+        methods:
+          - "build_prompt() -> str"
+          - "format_example(example) -> str"
+          - "load_examples(path) -> list"
+      
+      transaction_prompts:
+        description: "Prompt templates for transaction operations"
+        classes:
+          - "TransactionCategoryPrompt"
+          - "TransactionTaggingPrompt"
+      
+      category_prompts:
+        description: "Prompt templates for category matching"
+        classes:
+          - "CategoryMatchPrompt"
+      
+      example_management:
+        description: "JSON-based example storage and loading"
+        files:
+          - "transaction_examples.json" 
+          - "category_examples.json"
+
+# Code organization principles
+code_organization:
+  - "Keep files under 300 lines where possible"
+  - "Group related functionality in the same module"
+  - "Use composition over inheritance"
+  - "Keep methods focused on a single responsibility"
+  - "Centralize cross-cutting concerns like caching and logging"
+  - "Maintain clear interfaces between layers"
+  - "Use consistent error handling across modules"
+  - "Prioritize readability over brevity"
+
+# Dependencies between components
+dependencies:
+  - from: "services/transaction_service.py"
+    to: ["api/transactions_api.py", "services/ai_tagging_service.py", "prompts/transaction_prompts.py"]
+  
+  - from: "services/category_service.py"
+    to: ["api/categories_api.py", "prompts/category_prompts.py"]
+  
+  - from: "api/base_client.py"
+    to: ["utils/circuit_breaker.py", "utils/api_utils.py"]
+  
+  - from: "prompts/transaction_prompts.py"
+    to: ["prompts/base_prompts.py"]
+  
+  - from: "prompts/category_prompts.py"
+    to: ["prompts/base_prompts.py"]
+  
+  - from: "container.py"
+    to: ["api/*", "services/*", "utils/*", "prompts/*"]
+
+# YNAB API best practices implementation
+ynab_api_best_practices:
+  caching:
+    - "Implement comprehensive caching for all API responses"
+    - "Cache budget and category data with appropriate TTL"
+    - "Provide cache invalidation mechanisms for manual refresh"
+
+  delta_requests:
+    - "Implement server_knowledge tracking for applicable endpoints"
+    - "Support delta requests for transactions and categories"
+    - "Store last_known_server_knowledge with timestamps"
+
+  fault_tolerance:
+    - "Enhance circuit breaker with configurable thresholds"
+    - "Implement exponential backoff for retries"
+    - "Add proper exception handling with recovery strategies"
+    - "Log failed requests with appropriate error levels"
+
+  specific_requests:
+    - "Use specific endpoint variations where available"
+    - "Implement filtering at API request level"
+    - "Support pagination for large data sets"
+    - "Allow specifying fields to reduce response size"
+
+# Migration strategy for existing code
+migration_strategy:
+  approach: "Gradual replacement"
+  steps:
+    - "Extract models first"
+    - "Create new API clients in parallel with existing code"
+    - "Gradually move functionality to appropriate services"
+    - "Update container.py to wire new components"
+    - "Replace calls to old code with new components"
+    - "Remove old code once verified"
+
+# Tagging system improvements
+ai_tagging_improvements:
+  - "Standardize tag format across all operations"
+  - "Improve tag detection with regex patterns"
+  - "Add versioning to tag format for future compatibility"
+  - "Ensure AI tags survive all transaction modifications"
+  - "Add debugging support for tag parsing issues"
+
+# PydanticAI prompt management approach
+pydantic_ai_integration:
+  pattern: "Class-based prompt management with dependency injection"
+  description: "Follow PydanticAI patterns for prompt management and agent composition"
+  
+  implementation:
+    prompt_classes:
+      - description: "Create specialized prompt classes that inherit from a base class"
+      - example: |
+          class CategoryMatchPrompt:
+            def __init__(self, examples=None):
+              self.examples = self._load_examples() if examples is None else examples
+            
+            def build_prompt(self) -> str:
+              # Build the prompt with examples and instructions
+              return f"""Find the best matching category...
+              
+              {self._format_examples()}
+              """
+            
+            def _load_examples(self):
+              # Load examples from JSON file
+              with open('examples/category_examples.json') as f:
+                return json.load(f)
+              
+            def _format_examples(self):
+              # Format examples for inclusion in the prompt
+              return "\n".join(f"Example: {e['input']} -> {e['output']}" for e in self.examples)
+    
+    agent_integration:
+      - description: "Use PydanticAI's Agent with dependency injection for prompts"
+      - example: |
+          category_agent = Agent(
+            'gemini-1.5-pro',
+            deps_type=CategoryMatchPrompt
+          )
+          
+          @category_agent.system_prompt
+          async def system_prompt(ctx: RunContext[CategoryMatchPrompt]) -> str:
+            return ctx.deps.build_prompt()
+    
+    dynamic_prompts:
+      - description: "Support runtime customization of prompts"
+      - example: |
+          async def find_category(category_name, custom_examples=None):
+            # Optionally override examples for testing or specific use cases
+            prompt = CategoryMatchPrompt(examples=custom_examples)
+            result = await category_agent.run(category_name, deps=prompt)
+            return result.data
+    
+    examples_management:
+      - description: "Store examples in JSON files for easy maintenance"
+      - pattern: "Keep examples organized by domain (transactions, categories, etc.)"
+      - versioning: "Include version metadata in example files for tracking changes" 

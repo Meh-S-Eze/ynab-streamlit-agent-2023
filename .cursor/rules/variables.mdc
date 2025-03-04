@@ -1,0 +1,8 @@
+---
+description: always use - vairables
+globs: 
+alwaysApply: true
+---
+YNAB Budget Access Rule: Only access the designated development budget (ID: 7c8d67c8-ed70-4ba8-a25e-931a2f294167), never access or modify code to access other budgets, don't run commands that would access other budgets, use only existing .env variables, and never overwrite the .env file which contains confirmed API keys.
+
+always use .env for ai model selection never hard code them or overide them in application code.

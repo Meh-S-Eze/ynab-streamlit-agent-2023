@@ -45,9 +45,18 @@ def process(query):
     - What's my current balance?
     """
     try:
+        # Set up logging
+        logging.basicConfig(
+            level=logging.DEBUG,  # Set to DEBUG for more verbose output
+            format='%(message)s'
+        )
+        
         # Initialize dependencies through container
         container = Container()
         agent = container.base_agent()
+        
+        # Debug: Print the query
+        print(f"DEBUG - Processing query: '{query}'")
         
         # Process the query through the agent
         result = agent.process_query(query)

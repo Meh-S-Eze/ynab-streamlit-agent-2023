@@ -97,6 +97,11 @@ class AmountNormalizer:
             if raw_input is None:
                 logging.warning("Received None for amount, returning 0")
                 return Decimal('0')
+            
+            # Add more detailed logging for debugging
+            logging.debug(f"AmountNormalizer.normalize() raw_input: {raw_input} of type {type(raw_input)}")
+            if isinstance(raw_input, dict):
+                logging.debug(f"Dictionary content: {raw_input}")
                 
             # Add currency conversion stub
             if context and context.get("currency_conversion"):
@@ -113,11 +118,15 @@ class AmountNormalizer:
             errors = []
             for layer in validation_layers:
                 try:
+                    logging.debug(f"Trying validation layer: {layer.__name__}")
                     result = layer(raw_input, context)
                     if result is not None:
+                        logging.debug(f"Layer {layer.__name__} succeeded with result: {result}")
                         return self._apply_bounds_check(result)
                 except (ValueError, TypeError, AttributeError) as e:
-                    errors.append(f"{layer.__name__}: {str(e)}")
+                    error_msg = f"{layer.__name__}: {str(e)}"
+                    errors.append(error_msg)
+                    logging.debug(f"Layer {layer.__name__} failed: {str(e)}")
                     continue
             
             # If all validation layers failed, log but return a default value
@@ -137,23 +146,51 @@ class AmountNormalizer:
     
     def _extract_from_ai_dict(self, value: Any, context: Optional[Dict]) -> Optional[Decimal]:
         """Handle AI output with proper structure validation"""
-        if isinstance(value, dict) and context.get("source") == "gemini_ai":
+        if isinstance(value, dict):
+            logging.debug(f"Processing dictionary in _extract_from_ai_dict: {value}")
+            # Try to extract amount from various common dictionary structures
             if "amount" in value:
+                logging.debug(f"Found 'amount' key with value: {value['amount']}")
                 # Validate currency if present
                 currency = value.get("currency", "USD").upper()
                 if currency not in ISO4217Currency.__members__:
-                    raise ValueError(f"Invalid currency {currency} from AI")
+                    logging.warning(f"Invalid currency {currency} from AI")
                 
-                # Get conversion rate from context or config
-                conversion_rate = context.get(
-                    "conversion_rates", 
-                    {"USD": 1.0}
-                ).get(currency, 1.0)
-                
-                # Convert amount to base currency
-                converted_amount = Decimal(str(value["amount"])) * Decimal(str(conversion_rate))
-                
-                return converted_amount
+                try:
+                    # Convert amount to base currency - handle different types
+                    amount_value = value["amount"]
+                    if isinstance(amount_value, (int, float)):
+                        converted_amount = Decimal(str(amount_value))
+                    elif isinstance(amount_value, str):
+                        # Clean string of non-numeric characters
+                        clean_amount = re.sub(r'[^\d\.-]', '', amount_value)
+                        converted_amount = Decimal(clean_amount) if clean_amount else Decimal('0')
+                    else:
+                        logging.warning(f"Unexpected amount type in dictionary: {type(amount_value)}")
+                        return None
+                    
+                    logging.debug(f"Extracted amount: {converted_amount}")
+                    return converted_amount
+                except Exception as e:
+                    logging.error(f"Error processing dictionary amount: {e}")
+                    return None
+            
+            # Check for amount_value key pattern (used in AI output)
+            elif "amount_value" in value:
+                logging.debug(f"Found 'amount_value' key with value: {value['amount_value']}")
+                try:
+                    amount_value = value["amount_value"]
+                    if isinstance(amount_value, (int, float)):
+                        return Decimal(str(amount_value))
+                    elif isinstance(amount_value, str):
+                        clean_amount = re.sub(r'[^\d\.-]', '', amount_value)
+                        return Decimal(clean_amount) if clean_amount else Decimal('0')
+                    else:
+                        logging.warning(f"Unexpected amount_value type: {type(amount_value)}")
+                        return None
+                except Exception as e:
+                    logging.error(f"Error processing amount_value: {e}")
+                    return None
         return None
     
     def _convert_scientific_notation(self, value: Any, context: Optional[Dict]) -> Optional[Decimal]:

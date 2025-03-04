@@ -1,0 +1,74 @@
+---
+description: Rule Format Guidelines
+globs: .cursor/rules/*.yaml,.cursor/rules/*.mdc
+---
+# Rule Format Guidelines
+# This file documents the standard format for rule headers in YAML files
+
+format:
+  name: Rule Format Guidelines
+  description: Standardized format for rule headers in YAML files
+  priority: medium
+  status: implemented
+
+header_structure:
+  # Core header requirements
+  format: |
+    ---
+    description: Brief description not in quotes
+    globs: file/path1.py,file/path2.py,file/path3.py
+    ---
+  
+  fields:
+    description:
+      format: String not in quotes
+      example: description: AI Transaction Tagging System
+      required: true
+    
+    globs:
+      format: "Comma-separated list without quotes (single string)"
+      example: "globs: core/file1.py,core/file2.py,cli/*.py"
+      required: false
+      notes: "Use glob patterns to match multiple files with wildcards"
+
+implementation_details: |
+  The header section (front matter) of YAML rule files should follow a consistent format:
+  
+  1. Always enclosed between "---" markers
+  2. The description field should use double quotes
+  3. The globs field should be a single string with comma-separated values (no quotes)
+  4. Glob patterns can include wildcards (*)
+  5. Only include relevant file paths in globs to avoid unnecessary rule activation
+
+guidelines:
+  # Rules for maintaining header format consistency
+  - "Always place the header at the very top of the file, with no preceding lines"
+  - "Keep descriptions concise but descriptive"
+  - "For globs, include only the most relevant files where the rule applies"
+  - "Use consistent patterns for similar rule types"
+  - "Alphabetize glob paths when possible for better readability"
+
+examples:
+  minimal: |
+    ---
+    description: Brief Rule Description
+    globs: path/to/file.py
+    ---
+  
+  with_wildcards: |
+    ---
+    description: Rule With Wildcards
+    globs: core/*.py,cli/*.py
+    ---
+  
+  multiple_specific_files: |
+    ---
+    description: Rule For Specific Files
+    globs: core/important_file.py,core/related_file.py,cli/implementation.py
+    ---
+
+impact:
+  - Consistent rule format improves readability and maintainability
+  - Properly defined globs ensure rules are applied only to relevant files
+  - Standardized headers make it easier to programmatically process rules
+  - Reduces confusion when multiple developers contribute to the codebase 

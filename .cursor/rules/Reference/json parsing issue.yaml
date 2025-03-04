@@ -1,0 +1,249 @@
+# Understanding and Resolving "Additional Properties in JSON Schema" Errors with Gemini and Pydantic AI
+
+Before diving into a detailed exploration of your issue with Pydantic AI and Gemini models, let me summarize the key finding: The error "Additional properties in JSON Schema are not supported by Gemini" occurs because Gemini's API has specific limitations regarding JSON schema validation that conflict with how Pydantic generates schemas. This report will analyze the problem and provide several practical solutions to help you get your financial transaction parser working.
+
+## Understanding the Error and Its Causes
+
+### What the Error Means
+
+The error "Additional properties in JSON Schema are not supported by Gemini" specifically refers to how JSON schemas handle properties that aren't explicitly defined in the schema. In standard JSON Schema, the `additionalProperties` field controls whether an object can contain extra key-value pairs that weren't defined in the schema[13]. When set to `false`, it means no additional properties are allowed beyond what's defined.
+
+Gemini's API implementation has specific limitations regarding JSON schema support. Unlike some other LLM APIs, Gemini appears to either not support the `additionalProperties` field in schemas or handles it differently than expected[10]. When Pydantic generates a JSON schema from your `TransactionData` model, it's including this field, which is causing the validation error.
+
+### Why It's Happening with Pydantic AI
+
+Pydantic AI translates your Pydantic models into a JSON schema that Gemini can understand. However, there appears to be an incompatibility in this translation process. Some relevant findings:
+
+1. The Gemini API supports only a subset of the OpenAPI 3.0 Schema object and has specific limitations[7].
+
+2. There's a known issue in the Google generative-ai-python library where "all fields in the structured-output are effectively marked as optional," which can cause validation problems with Pydantic models that have required fields[15].
+
+3. When dictionaries are present in a schema used with Gemini, it can trigger errors like "Unknown field for Schema: additionalProperties"[12].
+
+4. Nested objects in your `TransactionData` model (like `AmountData`) might be exacerbating the problem, as nested schemas have additional constraints with Gemini[24].
+
+## Compatibility Issues Between Pydantic AI and Gemini Models
+
+There are indeed several known compatibility issues between Pydantic AI and Gemini models:
+
+1. **Schema Translation Issues**: The PydanticAI library has a custom interface to the Gemini API that may not perfectly translate all aspects of Pydantic models to Gemini-compatible schemas[8].
+
+2. **Required Fields Problem**: A known issue in the Gemini Python SDK affects required fields in Pydantic structured output. As one user reported: "Gemini API consistently doesn't fill all the required fields, which triggers Pydantic validation error"[15].
+
+3. **Performance Differences**: Some users have reported performance drops when switching from the Generative Language API to Vertex AI for production with Gemini models[6].
+
+4. **JSON Validation Challenges**: Many users report difficulties getting valid JSON returned from Gemini models, with issues like unescaped quotes and improper formatting[5].
+
+## Solutions to Fix the Issue
+
+### 1. Simplify Your Schema Structure
+
+One of the most effective approaches is to simplify your schema structure:
+
+1. **Reduce Nesting**: Flatten your nested models where possible. Instead of having `TransactionData` with nested `AmountData`, consider flattening these into a single model.
+
+2. **Limit Dictionary Usage**: The error is specifically triggered by dictionary fields in schemas. Consider using more explicit field types instead of dictionaries[12].
+
+3. **Reduce Schema Complexity**: Gemini has limitations on schema complexity - a schema may have up to 100 object properties total, with up to five levels of nesting[24].
+
+### 2. Configure Pydantic Models
+
+Adjusting your Pydantic model configuration can help address the issue:
+
+1. **Set Extra Handling**: Modify your `TransactionData` model to explicitly handle extra properties:
+
+```python
+from pydantic import BaseModel, ConfigDict
+
+class TransactionData(BaseModel):
+    model_config = ConfigDict(extra='allow')  # Allow extra properties
+    # Your fields here
+```
+
+This configuration tells Pydantic to accept additional properties in the data, which may help avoid conflicts with Gemini's schema validation[22].
+
+2. **Use Field Exclusion**: You can exclude specific fields from the schema:
+
+```python
+from pydantic import BaseModel, Field
+
+class TransactionData(BaseModel):
+    some_internal_field: str = Field(..., exclude=True, exclude_schema=True)
+```
+
+This prevents certain fields from being included in the generated schema[19].
+
+### 3. Try Alternative Gemini Models
+
+Different Gemini models may have varying levels of support for structured outputs:
+
+1. **Latest Models**: Try using the latest Gemini models, such as "gemini-1.5-pro" instead of experimental versions. The search results indicate that "gemini-1.5-pro" has better support for structured outputs[8].
+
+2. **Vertex AI**: Consider using Gemini via the Vertex AI API instead of the Generative Language API for production use. However, note that some users have reported performance differences between these APIs[6][8].
+
+### 4. Modify Schema Generation
+
+You can intercept and modify the schema before it's sent to Gemini:
+
+1. **Remove additionalProperties**: Create a helper function to process the schema:
+
+```python
+def clean_schema_for_gemini(schema_dict):
+    """Remove additionalProperties from schema recursively."""
+    if isinstance(schema_dict, dict):
+        # Remove the additionalProperties key
+        schema_dict.pop('additionalProperties', None)
+        
+        # Recursively process nested dictionaries
+        for key, value in schema_dict.items():
+            if isinstance(value, dict):
+                clean_schema_for_gemini(value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        clean_schema_for_gemini(item)
+    
+    return schema_dict
+```
+
+2. **Use JSON Schema Directly**: Instead of relying on Pydantic to generate the schema, explicitly define a compatible schema for Gemini:
+
+```python
+response_schema = {
+    "type": "object",
+    "properties": {
+        "amount": {"type": "number"},
+        "description": {"type": "string"},
+        "category": {"type": "string"}
+    },
+    "required": ["amount", "description", "category"]
+}
+
+# Then use this with Gemini's response schema parameter
+```
+
+### 5. Consider Alternative Models
+
+If Gemini continues to be problematic, considering other model providers might be worthwhile:
+
+1. **OpenAI Models**: OpenAI models generally have more mature support for structured outputs and JSON schemas. According to search result[27], OpenAI's documentation for structured outputs is comprehensive, and the API has explicit support for JSON schema validation.
+
+2. **Other Supported Models**: PydanticAI supports multiple model providers including Anthropic, Ollama, Deepseek, Groq, and Mistral[3]. These might offer better compatibility with your structured data extraction needs.
+
+## Implementing a Solution
+
+Based on the search results, here's a recommended approach combining several solutions:
+
+```python
+from pydantic import BaseModel, ConfigDict
+from pydantic_ai import Agent
+from typing import Optional
+
+# 1. Simplified, flattened model with extra='allow'
+class TransactionData(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    
+    amount: float
+    description: str
+    category: Optional[str] = None
+    date: Optional[str] = None
+    # Other fields, but flattened (no nested AmountData)
+
+# 2. Use specific model settings for Gemini
+from pydantic_ai.models.gemini import GeminiModelSettings
+
+# 3. Create the agent with more controlled settings
+agent = Agent(
+    'google-gla:gemini-1.5-pro',  # Try a more stable model
+    system_prompt="You are a financial transaction parser...",
+    result_type=TransactionData,
+    model_settings=GeminiModelSettings(
+        temperature=0.0,  # Lower temperature for more deterministic output
+    )
+)
+
+# 4. Process the transaction
+try:
+    result = await agent.run(query)
+    print(f"Parsed transaction: {result.model_dump()}")
+except Exception as e:
+    print(f"Error parsing transaction: {str(e)}")
+    # Implement fallback strategy if needed
+```
+
+## Conclusion
+
+The error "Additional properties in JSON Schema are not supported by Gemini" stems from differences in how Gemini handles JSON schemas compared to the expectations of the Pydantic AI library. By simplifying your schema structure, properly configuring Pydantic models, trying alternative Gemini models, or considering different model providers, you should be able to resolve this issue.
+
+If these solutions don't work, the compatibility challenges between Pydantic and Gemini might require a more fundamental approach, such as using a different model provider or implementing a custom schema translation layer between your application and the Gemini API.
+
+OpenAI models may indeed handle this better due to their more mature support for structured outputs and JSON schema validation, but the solutions provided above should help you continue using Gemini if that's your preference.
+
+Citations:
+[1] https://github.com/Meh-S-Eze/ynab-streamlit-agent-2023
+[2] https://gist.github.com/tanaikech/45b1a738b9e27236545a3cbcc1479a58
+[3] https://ai.pydantic.dev/models/
+[4] https://github.com/pydantic/pydantic-ai/issues/990
+[5] https://www.reddit.com/r/GoogleGeminiAI/comments/1em9k95/just_cannot_get_valid_json_returned_from/
+[6] https://www.googlecloudcommunity.com/gc/AI-ML/Performance-drop-for-Gemini-on-Vertex-AI/m-p/877765
+[7] https://ai.google.dev/gemini-api/docs/structured-output
+[8] https://ai.pydantic.dev/api/models/gemini/
+[9] https://www.projectpro.io/article/pydantic-ai/1088
+[10] https://github.com/langchain-ai/langchainjs/issues/5240
+[11] https://stackoverflow.com/questions/69617489/can-i-get-incoming-extra-fields-from-pydantic
+[12] https://stackoverflow.com/questions/79225718/how-can-i-use-dict-in-response-schemas-using-gemini-api
+[13] https://stackoverflow.com/questions/58784142/jsonschema-extending-and-no-additional-properties
+[14] https://www.raymondcamden.com/2024/06/11/using-json-schema-with-google-gemini
+[15] https://github.com/google-gemini/generative-ai-python/issues/642
+[16] https://www.reddit.com/r/learnpython/comments/1aqkutq/pydantic_v2_change_extra_config/
+[17] https://stackoverflow.com/questions/70587513/pydantic-exclude-multiple-fields-from-model
+[18] https://stackoverflow.com/questions/78175445/change-pydantic-extra-behaviour-per-call
+[19] https://stackoverflow.com/questions/78023568/how-can-i-exclude-a-pydantic-field-from-the-schema
+[20] https://docs.pydantic.dev/1.10/usage/schema/
+[21] https://ai.pydantic.dev/agents/
+[22] https://docs.pydantic.dev/latest/api/config/
+[23] https://github.com/langflow-ai/langflow/discussions/4329
+[24] https://learn.microsoft.com/en-us/azure/ai-services/openai/how-to/structured-outputs
+[25] https://community.openai.com/t/schema-additionalproperties-must-be-false-when-strict-is-true/929996
+[26] https://community.openai.com/t/canonical-way-of-turning-pydantic-schemas-into-function-tools-schemas/578189
+[27] https://platform.openai.com/docs/guides/structured-outputs
+[28] https://developers.googleblog.com/en/mastering-controlled-generation-with-gemini-15-schema-adherence/
+[29] https://cloud.google.com/vertex-ai/generative-ai/docs/samples/generativeaionvertexai-gemini-controlled-generation-response-schema-2
+[30] https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/control-generated-output
+[31] https://ai.pydantic.dev/results/
+[32] https://github.com/pydantic/pydantic-ai/issues/808
+[33] https://python.useinstructor.com/integrations/google/
+[34] https://docs.pydantic.dev/latest/errors/validation_errors/
+[35] https://www.googlecloudcommunity.com/gc/AI-ML/Unexpected-400-errors-with-Generated-Output-Schema/m-p/810322/highlight/true
+[36] https://www.reddit.com/r/MachineLearning/comments/1dyxiw4/d_is_anyone_else_having_trouble_with_the/
+[37] https://firebase.google.com/docs/vertex-ai/structured-output
+[38] https://discuss.ai.google.dev/t/feedback-on-gemini-2-0-with-pydantic/58188
+[39] https://github.com/pydantic/pydantic-ai/issues/533
+[40] https://datachain.ai/blog/enforcing-json-outputs-in-commercial-llms
+[41] https://simonwillison.net/2025/Feb/28/llm-schemas/
+[42] https://github.com/google-gemini/generative-ai-js/issues/313
+[43] https://stackoverflow.com/questions/17530762/only-allow-properties-that-are-declared-in-json-schema
+[44] https://github.com/pydantic/pydantic-ai/blob/main/pydantic_ai_slim/pydantic_ai/models/gemini.py
+[45] https://glaforge.dev/posts/2024/07/05/latest-gemini-features-support-in-langchain4j/
+[46] https://discuss.ai.google.dev/t/gemini-2-0-use-a-list-of-pydantic-objects-at-response-schema/55935
+[47] https://stackoverflow.com/questions/79214721/json-schema-anyof-and-additionalproperties-false-failing-validation
+[48] https://groups.google.com/g/json-schema/c/mmPVym3Pfig
+[49] https://discuss.ai.google.dev/t/gemini-rejects-tool-json-schema-with-array-of-types/4580
+[50] https://discuss.ai.google.dev/t/issue-with-schema-configuration-on-gemini-exp-1206-api/61164
+[51] https://github.com/BerriAI/litellm/issues/3891
+[52] https://discuss.ai.google.dev/t/response-schema-from-pydantic/50028
+[53] https://docs.pydantic.dev/latest/api/json_schema/
+[54] https://discuss.ai.google.dev/t/two-tool-calling-bugs-i-found-in-openai-compatibility-beta/58174
+[55] https://github.com/pydantic/pydantic/pull/6343
+[56] https://github.com/pydantic/pydantic-ai
+[57] https://dev.to/mattlewandowski93/guaranteed-structured-outputs-with-openai-5g0i
+[58] https://github.com/BerriAI/litellm/issues/6136
+[59] https://community.openai.com/t/how-to-define-pydantic-json-schema/988192
+[60] https://modelmetry.com/blog/how-to-ensure-llm-output-adheres-to-a-json-schema
+[61] https://community.openai.com/t/using-pydantic-structured-outputs-in-batch-mode/955756
+[62] https://github.com/google-gemini/generative-ai-python/issues/137
+[63] https://github.com/openai/openai-python/issues/2024
+[64] https://forum.bubble.io/t/json-response-in-claude-ai-openai-gemini/329061
+[65] https://community.openai.com/t/pydantic-with-dict-not-working/1046724
+[66] https://community.openai.com/t/how-to-define-pydantic-json-schema/988192/5
+[67] https://github.com/GoogleCloudPlatform/generative-ai/blob/main/gemini/controlled-generation/intro_controlled_generation.ipynb

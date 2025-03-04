@@ -43,26 +43,126 @@ class GeminiSemanticMatcher:
             ConfidenceResult with categorization details
         """
         # Prepare context-rich prompt for AI model
-        context_prompt = f"""
-        Categorize this financial transaction with high accuracy:
+        context_prompt = f"""You are a YNAB (You Need A Budget) financial transaction categorization specialist. Your task is to assign the most appropriate budget category to a transaction based on its details and contextual information.
 
-        Transaction Details:
-        - Description: {transaction.payee}
-        - Amount: ${transaction.amount}
-        - Date: {transaction.date}
+TRANSACTION TO CATEGORIZE:
+Description: {transaction.payee}
+Amount: ${transaction.amount}
+Date: {transaction.date}
 
-        Available Categories: {', '.join(cat['name'] for cat in existing_categories)}
+AVAILABLE BUDGET CATEGORIES:
+{', '.join(cat['name'] for cat in existing_categories)}
 
-        Context Considerations:
-        {'Previous similar transactions: ' + ', '.join(
-            f"{t.payee} ({t.category})" for t in transaction_history[:5]
-        ) if transaction_history else 'No previous transaction context'}
+HISTORICAL CONTEXT:
+{f"Previous similar transactions (Payee → Category):\n" + '\n'.join(
+    f"- {t.payee} → {t.category}" for t in transaction_history[:5]
+) if transaction_history and len(transaction_history) > 0 else 'No previous transaction history available'}
 
-        Provide:
-        1. Most likely category
-        2. Confidence score (0-1)
-        3. Reasoning for categorization
-        """
+CATEGORIZATION GUIDELINES:
+1. Analyze the transaction description for keywords indicating the type of purchase
+2. Consider the transaction amount as a contextual clue
+3. Take into account any patterns from similar previous transactions
+4. Focus on identifying the actual purpose of the transaction, not just the vendor
+5. When uncertain between multiple categories, choose the most specific one
+
+EXAMPLE CATEGORIZATIONS WITH REASONING:
+
+Example 1 - Grocery Store:
+Transaction: "KROGER #123" for $78.92 on 2023-05-12
+{{
+  "category": "Groceries",
+  "confidence": 0.95,
+  "reasoning": "Kroger is a well-known grocery chain, and the amount is typical for a regular grocery shopping trip",
+  "alternative_categories": [
+    {{
+      "name": "Household Goods",
+      "confidence": 0.45
+    }},
+    {{
+      "name": "Personal Care",
+      "confidence": 0.25
+    }}
+  ]
+}}
+
+Example 2 - Ambiguous Online Purchase:
+Transaction: "AMAZON MARKETPLACE" for $35.67 on 2023-05-14
+{{
+  "category": "Shopping",
+  "confidence": 0.65,
+  "reasoning": "Amazon purchase with moderate confidence as it could be various items; amount suggests smaller household or personal items rather than major purchase",
+  "alternative_categories": [
+    {{
+      "name": "Household Goods",
+      "confidence": 0.55
+    }},
+    {{
+      "name": "Entertainment",
+      "confidence": 0.45
+    }}
+  ]
+}}
+
+Example 3 - Clear Utility Bill:
+Transaction: "CITY POWER & LIGHT" for $145.33 on 2023-05-15
+{{
+  "category": "Utilities",
+  "confidence": 0.98,
+  "reasoning": "Description clearly indicates a utility company, and amount is in the typical range for a monthly utility bill",
+  "alternative_categories": [
+    {{
+      "name": "Bills",
+      "confidence": 0.60
+    }}
+  ]
+}}
+
+Example 4 - Low Confidence:
+Transaction: "ACH TRANSFER 3887651" for $500.00 on 2023-05-16
+{{
+  "category": "Uncategorized",
+  "confidence": 0.40,
+  "reasoning": "Generic transfer description without clear purpose; amount is substantial but could match multiple categories; insufficient context to determine with high confidence",
+  "alternative_categories": [
+    {{
+      "name": "Bills",
+      "confidence": 0.35
+    }},
+    {{
+      "name": "Transfer",
+      "confidence": 0.35
+    }},
+    {{
+      "name": "Rent",
+      "confidence": 0.30
+    }}
+  ]
+}}
+
+PROVIDE A JSON RESPONSE WITH EXACTLY THESE FIELDS:
+{{
+  "category": "Most appropriate category name from the available list",
+  "confidence": 0.85,  // Decimal between 0.0-1.0 indicating your confidence
+  "reasoning": "Clear explanation of why this category is most appropriate",
+  "alternative_categories": [
+    {{
+      "name": "Second best category",
+      "confidence": 0.65
+    }},
+    {{
+      "name": "Third best category",
+      "confidence": 0.40
+    }}
+  ]
+}}
+
+CATEGORIZATION ACCURACY REQUIREMENTS:
+- Use ONLY categories from the provided list
+- Provide a confidence score that genuinely reflects certainty
+- Give lower confidence scores (below 0.6) when genuinely uncertain
+- Include 2-3 alternative categories when reasonable alternatives exist
+- Ensure JSON is properly formatted with exact field names as shown
+"""
 
         try:
             # Generate categorization response using the AI client factory

@@ -311,71 +311,47 @@ class BaseAgent:
 
     def get_budget_context(self, budget_id: Optional[str] = None):
         """
-        Retrieve comprehensive budget context
+        Get a summary of the budget, including basic stats and recent transactions
         
         Args:
-            budget_id (Optional[str]): Specific budget ID. Uses default if not provided.
-        
+            budget_id (str, optional): Budget ID to analyze
+            
         Returns:
-            Dict with budget and transaction details
+            Dict[str, Any]: Summary of budget information
         """
-        # Always use the configured budget ID from .env
-        budget_id = budget_id or self.ynab_client.budget_id
+        # If no budget_id specified, use the default
+        if budget_id is None:
+            budget_id = self.ynab_client.budget_id
+            
+        # Get budget info
+        budget = self.ynab_client.get_budget_info()
         
-        # Retrieve transactions for the budget
-        transactions = self.use_tool(
-            self.ynab_client.get_transactions, 
-            budget_id=budget_id
-        )
-        
-        # Get budget details through YNAB client
-        budget = self.use_tool(
-            self.ynab_client.get_budget_details,
-            budget_id=budget_id
-        )
-        
-        return {
-            'budget_name': budget['name'],
-            'budget_id': budget_id,
-            'transactions': transactions
+        # Prepare response
+        context = {
+            "budget_name": budget.get("name", "Unknown"),
+            "currency": budget.get("currency_format", {}).get("iso_code", "USD"),
+            "date_format": budget.get("date_format", {"format": "YYYY-MM-DD"}),
+            "last_month_activity": "Not available",
+            "current_month_activity": "Not available",
+            "accounts_summary": "Not available",
+            "categories_summary": "Not available"
         }
-
-    def _parse_with_openai(self, query: str) -> Dict[str, Any]:
-        """
-        Use OpenAI API to parse the transaction query as a backup.
-        """
-        try:
-            # Use the new OpenAI client API (for v1.0.0+)
-            openai_api_key = os.getenv('OPENAI_API_KEY')
-            if not openai_api_key:
-                return {"status": "error", "summary": "Missing OpenAI API key in environment variables"}
-            
-            client = openai.OpenAI(api_key=openai_api_key)
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are a transaction parser. Extract transaction details from user queries."},
-                    {"role": "user", "content": f"Parse this transaction query into JSON format with amount, payee_name, date, and category if mentioned: {query}"}
-                ],
-                response_format={"type": "json_object"}
-            )
-            
-            # Extract the JSON content from the response
-            result = json.loads(response.choices[0].message.content)
-            return result
-        except Exception as e:
-            self.logger.error(f"OpenAI parsing failed: {e}")
-            return {"status": "error", "summary": f"OpenAI parsing failed: {str(e)}"}
+        
+        return context
+        
+    # AI-only parsing approach: We no longer use fallback methods for transaction parsing
+    # as per architecture principles: "Never use fallback parsing when AI parsing fails - 
+    # focus on improving AI parsing instead"
 
     def process_query(self, query: str) -> Dict[str, Any]:
         """
-        Process a natural language query and take appropriate action.
+        Process a natural language query using the appropriate tools
         
         Args:
-            query (str): Natural language query from user
+            query (str): User's natural language query
             
         Returns:
-            Dict[str, Any]: Response data
+            Dict[str, Any]: Response containing results or error information
         """
         try:
             # Clean and normalize the query
@@ -407,45 +383,150 @@ class BaseAgent:
                         raise ValueError("No transaction data in response")
                         
                 except (TimeoutError, ConnectionError, requests.exceptions.RequestException) as e:
-                    # Only fall back for network or API-related errors
-                    self.logger.error(f"Gemini API or network error: {str(e)}")
-                    self.logger.info("Falling back to OpenAI for transaction parsing due to API or network error")
-                    return self._parse_with_openai(query)
+                    # No fallback for network errors - log a clear error message instead
+                    self.logger.error(f"Network or API error: {str(e)}")
+                    return {
+                        "status": "error",
+                        "summary": f"Network or API error: {str(e)}",
+                        "details": "The AI service is currently unavailable. Please try again later."
+                    }
                 except ValueError as e:
-                    # For data validation errors, return helpful error message instead of falling back
+                    # For data validation errors, return helpful error message
                     self.logger.error(f"Transaction validation failed: {str(e)}")
                     return {
                         "status": "error",
                         "summary": f"Invalid transaction format: {str(e)}",
-                        "details": "Please check your input and try again with a clearer transaction description."
-                    }
-                except Exception as e:
-                    # For all other errors, return a generic error message
-                    self.logger.error(f"Transaction creation failed: {str(e)}")
-                    return {
-                        "status": "error",
-                        "summary": f"Transaction creation failed: {str(e)}",
-                        "details": "An unexpected error occurred. Please try again with different wording."
+                        "details": "Please provide a clearer transaction description with amount, payee, and date information."
                     }
                     
             # Get intent from Gemini
-            intent_prompt = f"""
-            Analyze this financial query and determine the intent:
-            "{query}"
-            
-            Return ONLY a JSON object with these fields:
-            {{
-                "intent": "create_transaction" or "update_category" or "categorize_transactions" or "get_balance" or "show_transactions" or "unknown",
-                "description": "Brief description of what the user wants to do",
-                "details": {{
-                    "should_categorize_all": true/false,  # Whether to categorize all transactions or just uncategorized ones
-                    "specific_category": null or "category_name",  # If user wants to categorize to a specific category
-                    "show_uncategorized": true/false,  # Whether to show only uncategorized transactions
-                    "show_category": null or "category_name",  # If user wants to show transactions of a specific category
-                    "is_category_update": true/false  # Whether this is a category update request
-                }}
-            }}
-            """
+            intent_prompt = f"""You are a YNAB (You Need A Budget) financial query analyzer. Your task is to accurately identify what financial action the user wants to perform from their natural language query.
+
+USER QUERY:
+"{query}"
+
+FINANCIAL INTENT CLASSIFICATION TASK:
+Analyze the query to determine the specific financial operation the user intends to perform with YNAB.
+
+POSSIBLE INTENTS:
+1. "create_transaction" - User wants to record a new transaction
+2. "update_category" - User wants to change a category for a transaction
+3. "categorize_transactions" - User wants to assign categories to transactions
+4. "get_balance" - User wants to check account balance or budget status
+5. "show_transactions" - User wants to view or list transactions
+6. "unknown" - Cannot determine a clear financial intent
+
+ADDITIONAL DETAILS TO EXTRACT:
+- For categorize_transactions: Should all transactions be categorized or only uncategorized ones?
+- For show_transactions: Should only specific category transactions be shown?
+- For update_category: Which transaction and what category is being referenced?
+
+EXAMPLE INTENT ANALYSES:
+
+Example 1 - Create Transaction:
+Input: "I spent $45 at the Italian restaurant downtown yesterday"
+{{
+    "intent": "create_transaction",
+    "description": "User wants to record a restaurant expense transaction",
+    "details": {{
+        "should_categorize_all": false,
+        "specific_category": "Dining Out",
+        "show_uncategorized": false,
+        "show_category": null,
+        "is_category_update": false
+    }}
+}}
+
+Example 2 - Show Transactions:
+Input: "Show me all my grocery expenses from last month"
+{{
+    "intent": "show_transactions",
+    "description": "User wants to view grocery transactions from previous month",
+    "details": {{
+        "should_categorize_all": false,
+        "specific_category": "Groceries",
+        "show_uncategorized": false,
+        "show_category": "Groceries",
+        "is_category_update": false
+    }}
+}}
+
+Example 3 - Update Category:
+Input: "Change that Amazon purchase from yesterday to the Gifts category"
+{{
+    "intent": "update_category",
+    "description": "User wants to recategorize an Amazon transaction to Gifts",
+    "details": {{
+        "should_categorize_all": false,
+        "specific_category": "Gifts",
+        "show_uncategorized": false,
+        "show_category": null,
+        "is_category_update": true
+    }}
+}}
+
+Example 4 - Categorize Transactions:
+Input: "Please categorize all the uncategorized transactions"
+{{
+    "intent": "categorize_transactions",
+    "description": "User wants the system to automatically categorize all uncategorized transactions",
+    "details": {{
+        "should_categorize_all": false,
+        "specific_category": null,
+        "show_uncategorized": true,
+        "show_category": null,
+        "is_category_update": false
+    }}
+}}
+
+Example 5 - Get Balance:
+Input: "How much do I have left in my entertainment budget?"
+{{
+    "intent": "get_balance",
+    "description": "User wants to check the remaining balance in entertainment category",
+    "details": {{
+        "should_categorize_all": false,
+        "specific_category": "Entertainment",
+        "show_uncategorized": false,
+        "show_category": null,
+        "is_category_update": false
+    }}
+}}
+
+Example 6 - Ambiguous/Unknown:
+Input: "YNAB is great for tracking expenses"
+{{
+    "intent": "unknown",
+    "description": "User is making a general statement about YNAB, not requesting a specific action",
+    "details": {{
+        "should_categorize_all": false,
+        "specific_category": null,
+        "show_uncategorized": false,
+        "show_category": null,
+        "is_category_update": false
+    }}
+}}
+
+RESPONSE FORMAT - EXACT JSON STRUCTURE:
+{{
+    "intent": "create_transaction",  // One of the six possible intents listed above
+    "description": "User wants to add a new grocery purchase transaction",  // Brief explanation
+    "details": {{
+        "should_categorize_all": false,  // For categorization intents
+        "specific_category": "Groceries",  // Category name if mentioned
+        "show_uncategorized": false,  // For show transaction intents
+        "show_category": null,  // Category filter for show transactions
+        "is_category_update": false  // Whether this involves updating a transaction category
+    }}
+}}
+
+RESPONSE REQUIREMENTS:
+- Return ONLY valid JSON with no additional text
+- Use null for missing or inapplicable fields
+- Set boolean fields to true/false as appropriate
+- Ensure your determination is based only on the actual query content
+- Do not invent details not present in the original query
+"""
             
             # Use _generate_with_model instead of directly accessing model
             intent_response = self.gemini_analyzer._generate_with_model(
@@ -532,20 +613,11 @@ class BaseAgent:
                 try:
                     result = self.gemini_analyzer.process_category_update_request(query)
                     
-                    # Add blue flag to indicate this is an AI-modified transaction
-                    if result['status'] == 'success' and 'transaction' in result:
-                        transaction_id = result['transaction'].get('id')
-                        if transaction_id:
-                            # Update the transaction with a blue flag
-                            update_result = self.ynab_client.update_transaction(
-                                transaction_id=transaction_id,
-                                updates={'flag_name': 'blue'}  # Blue flag for AI-modified transactions
-                            )
-                    
+                    # No need to update the flag separately as our new method handles it
                     if result['status'] == 'success':
                         return {
                             'summary': 'Category updated successfully',
-                            'transaction': result['transaction']
+                            'transaction': result.get('transaction', {})
                         }
                     else:
                         return {
