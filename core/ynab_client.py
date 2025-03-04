@@ -1,5 +1,5 @@
 import requests
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Union
 from functools import lru_cache
 from .circuit_breaker import CircuitBreaker, CircuitBreakerError
 from .config import ConfigManager
@@ -633,20 +633,31 @@ class YNABClient:
             
         return payee_id
 
-    def create_transaction(self, budget_id: Optional[str] = None, transaction: Dict = None):
+    def create_transaction(self, transaction: Union['TransactionCreate', Dict], budget_id: Optional[str] = None) -> Dict:
         """
-        Create a transaction with comprehensive validation and error handling
+        Create a new transaction in YNAB
         
         Args:
-            budget_id (Optional[str]): Budget ID to create transaction in
-            transaction (Dict): Transaction details
+            transaction (Union[TransactionCreate, Dict]): Transaction details or a TransactionCreate object
+            budget_id (str, optional): Specific budget ID. Uses default if not provided.
         
         Returns:
-            Dict with transaction creation result
+            Dict containing the created transaction details
         """
-        # Use default budget ID if not provided
-        budget_id = budget_id or self.budget_id
-        self.logger.info(f"Creating transaction for budget: budget_id='{budget_id}'")
+        self.logger.info(f"Creating transaction for budget: budget_id='{budget_id or self.budget_id}'")
+        self.logger.debug(f"Transaction details: {transaction}")
+        
+        # Convert Pydantic model to dictionary if needed
+        if hasattr(transaction, 'model_dump'):
+            # For Pydantic v2+
+            transaction_dict = transaction.model_dump()
+        elif hasattr(transaction, 'dict'):
+            # For Pydantic v1
+            transaction_dict = transaction.dict()
+        else:
+            transaction_dict = transaction
+            
+        self.logger.debug(f"Transaction dict: {transaction_dict}")
         
         try:
             # Import validation dependencies
@@ -654,44 +665,44 @@ class YNABClient:
             from .transaction_validator import TransactionValidator, DuplicateTransactionError, FutureDateError, InvalidTransactionError
             
             # Format date to ISO-8601 if present
-            if 'date' in transaction:
-                original_date = transaction['date']
-                transaction['date'] = self._format_date_for_api(transaction['date'])
-                self.logger.debug(f"Formatted date for API: original_date='{original_date}', formatted_date='{transaction['date']}'")
+            if 'date' in transaction_dict:
+                original_date = transaction_dict['date']
+                transaction_dict['date'] = self._format_date_for_api(transaction_dict['date'])
+                self.logger.debug(f"Formatted date for API: original_date='{original_date}', formatted_date='{transaction_dict['date']}'")
             
             # Convert amount to TransactionAmount if not already
-            if 'amount' in transaction and not isinstance(transaction['amount'], TransactionAmount):
-                amount_value = transaction['amount']
-                is_outflow = amount_value < 0 if isinstance(amount_value, (int, float)) else transaction.get('is_outflow', True)
-                transaction['amount'] = TransactionAmount(
+            if 'amount' in transaction_dict and not isinstance(transaction_dict['amount'], TransactionAmount):
+                amount_value = transaction_dict['amount']
+                is_outflow = amount_value < 0 if isinstance(amount_value, (int, float)) else transaction_dict.get('is_outflow', True)
+                transaction_dict['amount'] = TransactionAmount(
                     amount=abs(float(amount_value)) if isinstance(amount_value, (int, float)) else amount_value,
                     is_outflow=is_outflow
                 )
                 self.logger.debug(f"Converted amount to TransactionAmount: raw_amount='{amount_value}', is_outflow={is_outflow}")
             
             # Handle payee lookup from cache if payee_name is provided but no payee_id
-            if 'payee_name' in transaction and transaction['payee_name'] and not transaction.get('payee_id'):
-                payee_name = transaction['payee_name']
+            if 'payee_name' in transaction_dict and transaction_dict['payee_name'] and not transaction_dict.get('payee_id'):
+                payee_name = transaction_dict['payee_name']
                 payee_id = self.get_payee_id(payee_name, budget_id)
                 
                 if payee_id:
                     # Use the cached payee ID
-                    transaction['payee_id'] = payee_id
+                    transaction_dict['payee_id'] = payee_id
                     self.logger.debug(f"Using cached payee ID: payee_name='{payee_name}', payee_id='{payee_id}'")
                 else:
                     # If payee not found in cache, add it to memo field
-                    memo = transaction.get('memo', '')
+                    memo = transaction_dict.get('memo', '')
                     if memo and payee_name.lower() not in memo.lower():
-                        transaction['memo'] = f"{payee_name} - {memo}"
+                        transaction_dict['memo'] = f"{payee_name} - {memo}"
                     elif not memo:
-                        transaction['memo'] = payee_name
+                        transaction_dict['memo'] = payee_name
                     
                     # Remove the payee_name field to avoid creating a new payee
                     self.logger.debug(f"Payee not found in cache, adding to memo and removing payee_name: '{payee_name}'")
-                    transaction.pop('payee_name', None)
+                    transaction_dict.pop('payee_name', None)
             
             # Create transaction model
-            transaction_model = TransactionCreate(**transaction)
+            transaction_model = TransactionCreate(**transaction_dict)
             self.logger.debug(f"Created transaction model: account_id='{transaction_model.account_id}', "
                             f"date='{transaction_model.date}', payee_name='{transaction_model.payee_name}', "
                             f"amount={transaction_model.amount.amount}, is_outflow={transaction_model.amount.is_outflow}")
@@ -700,102 +711,57 @@ class YNABClient:
             existing_transactions = self.get_transactions(budget_id)
             self.logger.debug(f"Retrieved {len(existing_transactions)} existing transactions for duplicate checking")
             
-            # Validate transaction through pipeline
+            # Validate transaction
             validator = TransactionValidator()
-            try:
-                self.logger.debug("Starting transaction validation")
-                validated_transaction = validator.validate_transaction(
-                    transaction_model,
-                    existing_transactions
-                )
-                self.logger.info("Transaction validation successful")
-            except DuplicateTransactionError as e:
-                self.logger.warning(f"Duplicate transaction detected: error='{str(e)}'")
-                return {
-                    'status': 'warning',
-                    'message': str(e),
-                    'details': {
-                        'error_type': 'duplicate',
-                        'transaction': transaction_model.dict()
-                    }
-                }
-            except FutureDateError as e:
-                self.logger.warning(f"Future date error detected: error='{str(e)}'")
-                return {
-                    'status': 'error',
-                    'message': str(e),
-                    'details': {
-                        'error_type': 'future_date',
-                        'transaction': transaction_model.dict()
-                    }
-                }
-            except InvalidTransactionError as e:
-                self.logger.error(f"Invalid transaction error: error='{str(e)}'")
-                return {
-                    'status': 'error',
-                    'message': str(e),
-                    'details': {
-                        'error_type': 'validation_error',
-                        'transaction': transaction_model.dict()
-                    }
-                }
+            validator.validate(transaction_model)
             
-            # Convert to YNAB API format
-            payload = {
-                'transaction': validated_transaction.to_api_format()
+            # Prepare API payload
+            transaction_data = {
+                'transaction': {
+                    'account_id': transaction_model.account_id,
+                    'date': transaction_model.date,
+                    'amount': self._convert_amount_to_milliunits(transaction_model.amount),
+                    'payee_id': transaction_model.payee_id,
+                    'payee_name': transaction_model.payee_name,
+                    'category_id': transaction_model.category_id,
+                    'memo': transaction_model.memo,
+                    'cleared': transaction_model.cleared,
+                    'approved': transaction_model.approved,
+                    'flag_color': transaction_model.flag_name,
+                }
             }
             
-            # Remove None values from payload
-            payload['transaction'] = {k: v for k, v in payload['transaction'].items() if v is not None}
-            self.logger.debug(f"Prepared API payload: payload={payload}")
+            # Remove None values from the transaction data
+            transaction_data['transaction'] = {k: v for k, v in transaction_data['transaction'].items() if v is not None}
             
-            # Attempt transaction creation
-            self.logger.info(f"Sending transaction creation request to YNAB API")
+            self.logger.debug(f"Prepared API payload: {transaction_data}")
+            
+            # Use default budget ID if not provided
+            budget_id = budget_id or self.budget_id
+            
+            # Send request to create transaction
             response = requests.post(
-                f"{self.base_url}/budgets/{budget_id}/transactions", 
+                f"{self.base_url}/budgets/{budget_id}/transactions",
                 headers=self.headers,
-                json=payload
+                json=transaction_data
             )
             
             # Handle response
-            if response.status_code == 201:
-                created_transaction = response.json().get('data', {}).get('transaction', {})
-                transaction_id = created_transaction.get('id')
-                self.logger.info(f"Transaction created successfully: transaction_id='{transaction_id}'")
-                
-                # Refresh the payee cache only if needed in future
-                if not self._payee_cache_initialized:
-                    self._initialize_payee_cache(budget_id)
-                
-                return {
-                    'status': 'success',
-                    'transaction_id': transaction_id,
-                    'message': 'Transaction successfully created',
-                    'details': created_transaction
-                }
-            elif response.status_code == 409:
-                self.logger.warning(f"Transaction creation conflict: status_code={response.status_code}")
-                return {
-                    'status': 'conflict',
-                    'message': 'Transaction may already exist',
-                    'details': response.json()
-                }
-            else:
-                error_data = response.json() if response.text else {}
-                self.logger.error(f"Transaction creation failed: status_code={response.status_code}, error_data={error_data}")
-                return {
-                    'status': 'error',
-                    'message': f'API error: {response.status_code}',
-                    'details': error_data
-                }
-                
+            response.raise_for_status()
+            response_data = response.json()
+            
+            self.logger.info(f"Transaction created successfully: id='{response_data['data']['transaction']['id']}'")
+            return response_data['data']
+            
+        except (DuplicateTransactionError, FutureDateError, InvalidTransactionError) as e:
+            self.logger.error(f"Transaction validation error: {str(e)}")
+            raise
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"API request failed: {str(e)}")
+            raise
         except Exception as e:
             self.logger.error(f"Transaction creation exception: error='{str(e)}'", exc_info=True)
-            return {
-                'status': 'error',
-                'message': f'Transaction creation failed: {str(e)}',
-                'details': {}
-            }
+            raise
 
     @CircuitBreaker(max_failures=3)
     @lru_cache(maxsize=32)
@@ -1169,3 +1135,22 @@ class YNABClient:
                 'message': f'Transaction update failed: {str(e)}',
                 'details': {}
             } 
+
+    def _convert_amount_to_milliunits(self, amount: 'TransactionAmount') -> int:
+        """
+        Convert a TransactionAmount to the milliunits format required by the YNAB API
+        
+        Args:
+            amount (TransactionAmount): The amount to convert
+            
+        Returns:
+            int: The amount in milliunits, with sign based on is_outflow
+        """
+        # Get the absolute amount value as an integer (already in milliunits)
+        milliunit_amount = int(amount.amount)
+        
+        # Apply the sign based on is_outflow
+        if amount.is_outflow:
+            return -abs(milliunit_amount)
+        else:
+            return abs(milliunit_amount) 

@@ -184,4 +184,36 @@ class TransactionValidator:
             self.logger.warning(
                 f"Category name '{transaction.category_name}' provided but no category_id. "
                 "This may indicate a category resolution failure."
-            ) 
+            )
+    
+    def validate(self, transaction: TransactionCreate) -> TransactionCreate:
+        """
+        Validate a single transaction without checking for duplicates
+        
+        Args:
+            transaction (TransactionCreate): Transaction to validate
+            
+        Returns:
+            Validated TransactionCreate object
+            
+        Raises:
+            FutureDateError: If transaction date is in the future
+            InvalidTransactionError: If transaction is invalid
+        """
+        try:
+            # Check for future date
+            if transaction.date > date.today():
+                raise FutureDateError(f"Transaction date {transaction.date} is in the future")
+            
+            # Validate amount
+            self._validate_amount(transaction.amount)
+            
+            # Validate required fields
+            self._validate_required_fields(transaction)
+            
+            return transaction
+        except (FutureDateError, InvalidTransactionError):
+            raise
+        except Exception as e:
+            self.logger.error(f"Unexpected validation error: {str(e)}")
+            raise InvalidTransactionError(f"Validation failed: {str(e)}") 

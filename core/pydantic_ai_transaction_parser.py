@@ -373,9 +373,9 @@ Return ONLY the JSON object, no other text.
                 try:
                     amount_value = float(transaction_data['amount'])
                     if amount_value <= 0:
-                        raise ValueError("Amount must be positive")
+                        raise ValueError(f"Amount must be positive. Received: {amount_value}")
                     if amount_value > 1000000:  # Sanity check - no transactions over $1M
-                        raise ValueError("Amount exceeds maximum allowed")
+                        raise ValueError(f"Amount exceeds maximum allowed value of $1,000,000. Received: {amount_value}")
                         
                     # Convert to milliunits (multiply by 1000)
                     milliunit_amount = int(amount_value * 1000)
@@ -387,7 +387,15 @@ Return ONLY the JSON object, no other text.
                     self.logger.debug(f"Transaction amount: amount_milliunits={amount.amount}, is_outflow={amount.is_outflow}")
                 except (TypeError, ValueError) as e:
                     self.logger.error(f"Failed to parse amount: {e}")
-                    raise ValueError(f"Invalid amount value: {transaction_data.get('amount')}")
+                    # Provide more specific error message
+                    if 'amount' not in transaction_data:
+                        raise ValueError("Amount is missing from transaction data")
+                    elif transaction_data['amount'] is None:
+                        raise ValueError("Amount cannot be null")
+                    elif isinstance(transaction_data['amount'], str) and not transaction_data['amount'].strip():
+                        raise ValueError("Amount cannot be empty")
+                    else:
+                        raise ValueError(f"Invalid amount value: {transaction_data.get('amount')}")
                 
                 # Parse transaction date
                 date_str = transaction_data.get('date')

@@ -345,13 +345,24 @@ class BaseAgent:
         Use OpenAI API to parse the transaction query as a backup.
         """
         try:
-            openai.api_key = os.getenv('OPENAI_API_KEY')
-            response = openai.Completion.create(
-                engine="text-davinci-003",
-                prompt=f"Parse this transaction query: {query}",
-                max_tokens=150
+            # Use the new OpenAI client API (for v1.0.0+)
+            openai_api_key = os.getenv('OPENAI_API_KEY')
+            if not openai_api_key:
+                return {"status": "error", "summary": "Missing OpenAI API key in environment variables"}
+            
+            client = openai.OpenAI(api_key=openai_api_key)
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a transaction parser. Extract transaction details from user queries."},
+                    {"role": "user", "content": f"Parse this transaction query into JSON format with amount, payee_name, date, and category if mentioned: {query}"}
+                ],
+                response_format={"type": "json_object"}
             )
-            return json.loads(response.choices[0].text.strip())
+            
+            # Extract the JSON content from the response
+            result = json.loads(response.choices[0].message.content)
+            return result
         except Exception as e:
             self.logger.error(f"OpenAI parsing failed: {e}")
             return {"status": "error", "summary": f"OpenAI parsing failed: {str(e)}"}
@@ -395,11 +406,27 @@ class BaseAgent:
                     else:
                         raise ValueError("No transaction data in response")
                         
-                except Exception as e:
-                    self.logger.error(f"Transaction creation failed with Gemini: {str(e)}")
-                    # Fallback to OpenAI
-                    self.logger.info("Falling back to OpenAI for transaction parsing")
+                except (TimeoutError, ConnectionError, requests.exceptions.RequestException) as e:
+                    # Only fall back for network or API-related errors
+                    self.logger.error(f"Gemini API or network error: {str(e)}")
+                    self.logger.info("Falling back to OpenAI for transaction parsing due to API or network error")
                     return self._parse_with_openai(query)
+                except ValueError as e:
+                    # For data validation errors, return helpful error message instead of falling back
+                    self.logger.error(f"Transaction validation failed: {str(e)}")
+                    return {
+                        "status": "error",
+                        "summary": f"Invalid transaction format: {str(e)}",
+                        "details": "Please check your input and try again with a clearer transaction description."
+                    }
+                except Exception as e:
+                    # For all other errors, return a generic error message
+                    self.logger.error(f"Transaction creation failed: {str(e)}")
+                    return {
+                        "status": "error",
+                        "summary": f"Transaction creation failed: {str(e)}",
+                        "details": "An unexpected error occurred. Please try again with different wording."
+                    }
                     
             # Get intent from Gemini
             intent_prompt = f"""
