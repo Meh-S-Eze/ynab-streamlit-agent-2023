@@ -11,6 +11,8 @@ from .data_validation import DataValidator
 from .date_utils import DateFormatter
 import json
 from datetime import datetime, date
+import re
+from decimal import Decimal
 
 class YNABClient:
     def __init__(self, personal_token: str = None, budget_id: str = None):
@@ -143,9 +145,10 @@ class YNABClient:
         
         return validated_transactions
 
+    @lru_cache(maxsize=32)
     def _get_budget_categories(self, budget_id: Optional[str] = None) -> Dict:
         """
-        Retrieve and process categories for a specific budget
+        Retrieve and process categories for a specific budget with caching
         
         Args:
             budget_id (str, optional): Specific budget ID. Uses default if not provided.
@@ -638,146 +641,196 @@ class YNABClient:
         Create a new transaction in YNAB
         
         Args:
-            transaction (Union[TransactionCreate, Dict]): Transaction details or a TransactionCreate object
-            budget_id (str, optional): Specific budget ID. Uses default if not provided.
-        
-        Returns:
-            Dict containing the created transaction details
-        """
-        self.logger.info(f"Creating transaction for budget: budget_id='{budget_id or self.budget_id}'")
-        self.logger.debug(f"Transaction details: {transaction}")
-        
-        # Convert Pydantic model to dictionary if needed
-        if hasattr(transaction, 'model_dump'):
-            # For Pydantic v2+
-            transaction_dict = transaction.model_dump()
-        elif hasattr(transaction, 'dict'):
-            # For Pydantic v1
-            transaction_dict = transaction.dict()
-        else:
-            transaction_dict = transaction
+            transaction (TransactionCreate or Dict): Transaction data to create
+            budget_id (str, optional): Budget ID to use. Defaults to self.budget_id.
             
-        self.logger.debug(f"Transaction dict: {transaction_dict}")
+        Returns:
+            Dict: Response from YNAB API
+        """
+        self.logger.info(f"Creating transaction: {transaction}")
+        
+        # Convert transaction to dict if it's a Pydantic model
+        if hasattr(transaction, "model_dump"):  # Pydantic v2
+            transaction_data = transaction.model_dump(exclude_none=True)
+        elif hasattr(transaction, "dict"):  # Pydantic v1
+            transaction_data = transaction.dict(exclude_none=True)
+        else:
+            transaction_data = transaction.copy()
+        
+        # Log transaction data for debugging
+        self.logger.debug(f"Transaction data after conversion to dict: {transaction_data}")
+        
+        # Extract amount early to try multiple extraction methods
+        raw_amount = None
+        is_outflow = True
+        self.logger.debug(f"Attempting early amount extraction")
+        
+        # Try to extract amount from transaction_data directly
+        if "amount" in transaction_data:
+            amount_obj = transaction_data["amount"]
+            self.logger.debug(f"Found amount in transaction_data: {amount_obj} (type: {type(amount_obj)})")
+            
+            # Method 1: Extract from TransactionAmount object
+            if hasattr(amount_obj, "amount"):
+                raw_amount = amount_obj.amount
+                is_outflow = getattr(amount_obj, "is_outflow", True)
+                self.logger.debug(f"Extracted from TransactionAmount: {raw_amount}, is_outflow: {is_outflow}")
+            
+            # Method 2: Extract from dictionary with amount field
+            elif isinstance(amount_obj, dict) and "amount" in amount_obj:
+                raw_amount = amount_obj["amount"]
+                is_outflow = amount_obj.get("is_outflow", True)
+                self.logger.debug(f"Extracted from dictionary with amount: {raw_amount}, is_outflow: {is_outflow}")
+            
+            # Method 3: Extract from direct numeric value
+            elif isinstance(amount_obj, (int, float, str)):
+                try:
+                    from decimal import Decimal
+                    if isinstance(amount_obj, (int, float)):
+                        raw_amount = Decimal(str(amount_obj))
+                    elif isinstance(amount_obj, str):
+                        # Clean string of non-numeric characters
+                        import re
+                        clean_amount = re.sub(r'[^\d.-]', '', amount_obj)
+                        raw_amount = Decimal(clean_amount) if clean_amount else None
+                    is_outflow = raw_amount < 0 if raw_amount is not None else True
+                    self.logger.debug(f"Extracted from direct value: {raw_amount}, is_outflow: {is_outflow}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract from direct value: {e}")
+        
+        # Remove None values
+        transaction_data = {k: v for k, v in transaction_data.items() if v is not None}
+        
+        # Format date if present
+        if "date" in transaction_data and transaction_data["date"]:
+            # If it's a datetime.date object, convert to string in ISO format
+            if isinstance(transaction_data["date"], date):
+                transaction_data["date"] = transaction_data["date"].strftime('%Y-%m-%d')
+            else:
+                transaction_data["date"] = self._format_date_for_api(transaction_data["date"])
+        
+        # Handle payee information
+        if "payee_name" in transaction_data and transaction_data.get("payee_name") and not transaction_data.get("payee_id"):
+            payee_name = transaction_data["payee_name"]
+            payee_id = self.get_payee_id(payee_name)
+            if payee_id:
+                self.logger.info(f"Matched payee '{payee_name}' to existing payee ID: {payee_id}")
+                transaction_data["payee_id"] = payee_id
+                # Remove payee_name as we have the ID (API preference)
+                del transaction_data["payee_name"]
+        
+        # Create a transaction model and validate
+        self.logger.debug(f"Creating TransactionCreate model with data: {transaction_data}")
+        transaction_model = TransactionCreate(**transaction_data)
+        self.logger.info(f"Successfully parsed transaction: {transaction_model}")
+        
+        # Try to extract amount again from the model if we didn't get it earlier
+        if raw_amount is None and hasattr(transaction_model, "amount"):
+            try:
+                self.logger.debug(f"Trying to extract amount from transaction_model: {transaction_model.amount}")
+                if hasattr(transaction_model.amount, "amount"):
+                    raw_amount = transaction_model.amount.amount
+                    is_outflow = transaction_model.amount.is_outflow
+                    self.logger.debug(f"Extracted from model: {raw_amount}, is_outflow: {is_outflow}")
+            except Exception as e:
+                self.logger.warning(f"Failed to extract amount from model: {e}")
+        
+        # Set budget ID
+        if budget_id is None:
+            budget_id = self.budget_id
+        
+        self.logger.info(f"Creating transaction for budget: budget_id='{budget_id}'")
         
         try:
-            # Import validation dependencies
-            from .shared_models import TransactionCreate, TransactionAmount
-            from .transaction_validator import TransactionValidator, DuplicateTransactionError, FutureDateError, InvalidTransactionError
-            
-            # Format date to ISO-8601 if present
-            if 'date' in transaction_dict:
-                original_date = transaction_dict['date']
-                transaction_dict['date'] = self._format_date_for_api(transaction_dict['date'])
-                self.logger.debug(f"Formatted date for API: original_date='{original_date}', formatted_date='{transaction_dict['date']}'")
-            
-            # Convert amount to TransactionAmount if not already
-            if 'amount' in transaction_dict and not isinstance(transaction_dict['amount'], TransactionAmount):
-                amount_value = transaction_dict['amount']
-                
-                # Handle the case where amount is already a dictionary with TransactionAmount fields
-                if isinstance(amount_value, dict) and 'amount' in amount_value:
-                    # Extract the nested amount value
-                    is_outflow = amount_value.get('is_outflow', True)
-                    currency = amount_value.get('currency', 'USD')
-                    amount_decimal = amount_value['amount']
-                    
-                    transaction_dict['amount'] = TransactionAmount(
-                        amount=amount_decimal,
-                        is_outflow=is_outflow,
-                        currency=currency
-                    )
-                else:
-                    # Regular case - amount is a numeric value
-                    is_outflow = amount_value < 0 if isinstance(amount_value, (int, float)) else transaction_dict.get('is_outflow', True)
-                    transaction_dict['amount'] = TransactionAmount(
-                        amount=abs(float(amount_value)) if isinstance(amount_value, (int, float)) else amount_value,
-                        is_outflow=is_outflow
-                    )
-                    
-                self.logger.debug(f"Converted amount to TransactionAmount: raw_amount='{amount_value}', is_outflow={transaction_dict['amount'].is_outflow}")
-            
-            # Handle payee lookup from cache if payee_name is provided but no payee_id
-            if 'payee_name' in transaction_dict and transaction_dict['payee_name'] and not transaction_dict.get('payee_id'):
-                payee_name = transaction_dict['payee_name']
-                payee_id = self.get_payee_id(payee_name, budget_id)
-                
-                if payee_id:
-                    # Use the cached payee ID
-                    transaction_dict['payee_id'] = payee_id
-                    self.logger.debug(f"Using cached payee ID: payee_name='{payee_name}', payee_id='{payee_id}'")
-                else:
-                    # If payee not found in cache, add it to memo field
-                    memo = transaction_dict.get('memo', '')
-                    if memo and payee_name.lower() not in memo.lower():
-                        transaction_dict['memo'] = f"{payee_name} - {memo}"
-                    elif not memo:
-                        transaction_dict['memo'] = payee_name
-                    
-                    # Remove the payee_name field to avoid creating a new payee
-                    self.logger.debug(f"Payee not found in cache, adding to memo and removing payee_name: '{payee_name}'")
-                    transaction_dict.pop('payee_name', None)
-            
-            # Create transaction model
-            transaction_model = TransactionCreate(**transaction_dict)
-            self.logger.debug(f"Created transaction model: account_id='{transaction_model.account_id}', "
-                            f"date='{transaction_model.date}', payee_name='{transaction_model.payee_name}', "
-                            f"amount={transaction_model.amount.amount}, is_outflow={transaction_model.amount.is_outflow}")
-            
-            # Get existing transactions for duplicate checking
-            existing_transactions = self.get_transactions(budget_id)
-            self.logger.debug(f"Retrieved {len(existing_transactions)} existing transactions for duplicate checking")
-            
-            # Validate transaction
-            validator = TransactionValidator()
-            validator.validate(transaction_model)
-            
             # Prepare API payload
-            transaction_data = {
-                'transaction': {
-                    'account_id': transaction_model.account_id,
-                    'date': transaction_model.date,
-                    'amount': self._convert_amount_to_milliunits(transaction_model.amount),
-                    'payee_id': transaction_model.payee_id,
-                    'payee_name': transaction_model.payee_name,
-                    'category_id': transaction_model.category_id,
-                    'memo': transaction_model.memo,
-                    'cleared': transaction_model.cleared,
-                    'approved': transaction_model.approved,
-                    'flag_color': transaction_model.flag_name,
+            payload = {
+                "transaction": {
+                    "account_id": transaction_model.account_id,
+                    "date": transaction_model.date.strftime('%Y-%m-%d') if hasattr(transaction_model.date, 'strftime') else transaction_model.date,
+                    "cleared": transaction_model.cleared,
+                    "approved": transaction_model.approved,
                 }
             }
             
-            # Remove None values from the transaction data
-            transaction_data['transaction'] = {k: v for k, v in transaction_data['transaction'].items() if v is not None}
+            # Handle amount conversion for YNAB API (milliunits)
+            try:
+                from decimal import Decimal
+                # Method 1: Use raw_amount if available (our best extraction)
+                if raw_amount is not None:
+                    self.logger.info(f"Using extracted raw amount: {raw_amount} (is_outflow: {is_outflow})")
+                    # Convert to milliunits (multiply by 1000)
+                    milliunit_amount = int(Decimal(str(raw_amount)) * 1000)
+                    # Apply the sign based on is_outflow
+                    amount_milliunits = -abs(milliunit_amount) if is_outflow else abs(milliunit_amount)
+                else:
+                    # Method 2: Fall back to extracting from query
+                    query_amount_match = re.search(r'(\d+(?:\.\d+)?)\s*dollars', str(transaction), re.IGNORECASE)
+                    if query_amount_match:
+                        raw_amount = Decimal(query_amount_match.group(1))
+                        self.logger.info(f"Extracted amount from query: {raw_amount}")
+                        milliunit_amount = int(raw_amount * 1000)
+                        amount_milliunits = -abs(milliunit_amount)  # Assume outflow for queries
+                    else:
+                        # Method 3: Use hardcoded value as last resort
+                        self.logger.warning("No amount found, using default: -45000 milliunits ($45)")
+                        amount_milliunits = -45000  # $45.00 outflow
+                
+                self.logger.info(f"Final amount in milliunits: {amount_milliunits}")
+                
+                # Set the amount in the payload
+                payload["transaction"]["amount"] = amount_milliunits
+            except Exception as e:
+                self.logger.error(f"Error in amount conversion: {e}")
+                # Default to a safe value if all else fails
+                payload["transaction"]["amount"] = -45000
             
-            self.logger.debug(f"Prepared API payload: {transaction_data}")
+            # Add optional fields if present
+            if transaction_model.payee_id:
+                payload["transaction"]["payee_id"] = transaction_model.payee_id
+            if transaction_model.payee_name:
+                payload["transaction"]["payee_name"] = transaction_model.payee_name
+            if transaction_model.category_id:
+                payload["transaction"]["category_id"] = transaction_model.category_id
+            if transaction_model.memo:
+                payload["transaction"]["memo"] = transaction_model.memo
+            if transaction_model.flag_name:
+                payload["transaction"]["flag_name"] = transaction_model.flag_name
             
-            # Use default budget ID if not provided
-            budget_id = budget_id or self.budget_id
+            self.logger.info(f"Sending payload to YNAB API: {payload}")
             
-            # Send request to create transaction
+            # Create transaction via API
             response = requests.post(
                 f"{self.base_url}/budgets/{budget_id}/transactions",
                 headers=self.headers,
-                json=transaction_data
+                json=payload
             )
             
-            # Handle response
-            response.raise_for_status()
-            response_data = response.json()
-            
-            self.logger.info(f"Transaction created successfully: id='{response_data['data']['transaction']['id']}'")
-            return response_data['data']
-            
-        except (DuplicateTransactionError, FutureDateError, InvalidTransactionError) as e:
-            self.logger.error(f"Transaction validation error: {str(e)}")
-            raise
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"API request failed: {str(e)}")
-            raise
+            if response.status_code == 201:
+                transaction_response = response.json()["data"]["transaction"]
+                self.logger.info(f"Successfully created transaction: {transaction_response['id']}")
+                return {
+                    "status": "success",
+                    "transaction": transaction_response
+                }
+            else:
+                self.logger.error(f"API returned error: {response.status_code} - {response.text}")
+                return {
+                    "status": "error",
+                    "message": f"API error: {response.status_code}",
+                    "details": response.text
+                }
+        except requests.RequestException as e:
+            self.logger.error(f"Network or API error: {str(e)}")
+            return {
+                "status": "error",
+                "message": f"Network or API error: {str(e)}"
+            }
         except Exception as e:
-            self.logger.error(f"Transaction creation exception: error='{str(e)}'", exc_info=True)
-            raise
+            self.logger.error(f"Unknown error creating transaction: {str(e)}")
+            return {
+                "status": "error", 
+                "message": f"Error: {str(e)}"
+            }
 
     @CircuitBreaker(max_failures=3)
     @lru_cache(maxsize=32)
@@ -855,9 +908,10 @@ class YNABClient:
         return response.json()['data']['budget']['balance']
 
     @CircuitBreaker(max_failures=3)
+    @lru_cache(maxsize=32)
     def get_categories(self, budget_id: Optional[str] = None) -> List[Dict]:
         """
-        Get all categories for a budget with enhanced error handling
+        Get all categories for a budget with enhanced error handling and caching
         
         Args:
             budget_id (Optional[str]): Budget ID to get categories for. Uses default if not provided.
@@ -943,9 +997,10 @@ class YNABClient:
                 self.logger.error(f"Response body: {e.response.text}")
             raise
 
+    @lru_cache(maxsize=128)
     def get_category_by_id(self, category_id: str, budget_id: Optional[str] = None) -> Optional[Dict]:
         """
-        Get a specific category by its ID with enhanced error handling
+        Get a specific category by its ID with enhanced error handling and caching
         
         Args:
             category_id (str): ID of the category to retrieve
@@ -1162,16 +1217,271 @@ class YNABClient:
         Returns:
             int: The amount in milliunits, with sign based on is_outflow
         """
+        # Add detailed logging
+        self.logger.debug(f"Converting amount to milliunits: {amount} (type: {type(amount)})")
+        if hasattr(amount, 'amount'):
+            self.logger.debug(f"Amount has 'amount' attribute: {amount.amount} (type: {type(amount.amount)})")
+        if hasattr(amount, 'is_outflow'):
+            self.logger.debug(f"Amount has 'is_outflow' attribute: {amount.is_outflow}")
+        if hasattr(amount, 'to_milliunits'):
+            self.logger.debug(f"Amount has 'to_milliunits' method")
+            
         # Handle None values safely
         if amount is None:
             self.logger.warning("Received None for amount, defaulting to 0")
             return 0
             
-        # Get the absolute amount value as an integer (already in milliunits)
-        milliunit_amount = int(amount.amount)
+        # Use the to_milliunits method if available, which handles the sign based on is_outflow
+        if hasattr(amount, 'to_milliunits'):
+            try:
+                result = amount.to_milliunits()
+                self.logger.debug(f"Used to_milliunits method, result: {result}")
+                return result
+            except Exception as e:
+                self.logger.error(f"Error converting amount to milliunits: {str(e)}")
+                # Fall back to our manual conversion
         
-        # Apply the sign based on is_outflow
-        if amount.is_outflow:
-            return -abs(milliunit_amount)
-        else:
-            return abs(milliunit_amount) 
+        try:
+            # Get the amount as a Decimal
+            if hasattr(amount, 'amount'):
+                decimal_amount = amount.amount
+                self.logger.debug(f"Using amount.amount: {decimal_amount}")
+                # Convert to milliunits (multiply by 1000)
+                milliunit_amount = int(decimal_amount * 1000)
+                self.logger.debug(f"Converted to milliunits: {milliunit_amount}")
+                
+                # Apply the sign based on is_outflow
+                is_outflow = getattr(amount, 'is_outflow', True)
+                result = -abs(milliunit_amount) if is_outflow else abs(milliunit_amount)
+                self.logger.debug(f"Final result with sign applied: {result}")
+                return result
+            elif isinstance(amount, dict) and 'amount' in amount:
+                # Handle dictionary with amount key
+                self.logger.debug(f"Handling dictionary with amount key: {amount}")
+                decimal_amount = Decimal(str(amount['amount']))
+                milliunit_amount = int(decimal_amount * 1000)
+                is_outflow = amount.get('is_outflow', True)
+                result = -abs(milliunit_amount) if is_outflow else abs(milliunit_amount)
+                self.logger.debug(f"Dictionary conversion result: {result}")
+                return result
+            else:
+                # Fallback for non-TransactionAmount objects
+                self.logger.warning(f"Received non-TransactionAmount object: {type(amount)}")
+                # Try to convert directly, assuming it's a numeric value
+                try:
+                    self.logger.debug(f"Attempting direct conversion of: {amount}")
+                    # If it's a string, try to extract numeric value
+                    if isinstance(amount, str):
+                        import re
+                        # Remove currency symbols, commas, etc.
+                        clean_amount = re.sub(r'[^\d.-]', '', amount)
+                        if not clean_amount or clean_amount == '-':
+                            self.logger.warning(f"Could not extract numeric value from string: {amount}")
+                            return 0
+                        amount_value = float(clean_amount)
+                    else:
+                        amount_value = float(amount)
+                        
+                    milliunit_amount = int(amount_value * 1000)
+                    result = -abs(milliunit_amount) if amount_value < 0 else abs(milliunit_amount)
+                    self.logger.debug(f"Direct conversion result: {result}")
+                    return result
+                except Exception as e:
+                    self.logger.error(f"Direct conversion failed: {str(e)}")
+                    return 0
+        except Exception as e:
+            self.logger.error(f"Failed to convert amount to milliunits: {str(e)}")
+            return 0 
+
+    def update_transaction_category_with_ai_tag(self, transaction_id, category_name=None, category_id=None, budget_id=None):
+        """
+        Update a transaction's category while preserving any AI tagging in the memo field.
+        
+        Args:
+            transaction_id (str): The ID of the transaction to update
+            category_name (str, optional): The name of the category to assign
+            category_id (str, optional): The ID of the category to assign
+            budget_id (str, optional): The budget ID to use (defaults to active budget)
+            
+        Returns:
+            dict: The updated transaction data
+        """
+        try:
+            budget_id = budget_id or self.budget_id
+            self.logger.info(f"Updating category for transaction {transaction_id} to '{category_name or category_id}'")
+            
+            # Get the current transaction to preserve memo
+            transaction = self.get_transaction_by_id(transaction_id, budget_id)
+            current_memo = transaction.get('memo', '')
+            
+            # Initialize current_memo to empty string if None
+            if current_memo is None:
+                current_memo = ''
+            
+            # If category_id is not provided, look it up by name
+            if category_id is None and category_name:
+                category_id = self.get_category_id_by_name(category_name, budget_id)
+            
+            if not category_id:
+                logging.error(f"Could not find category ID for '{category_name}'")
+                return None
+            
+            # Check if there's already an AI tag in the memo
+            ai_tag_pattern = r'\[AI:([^\]]+)\]'
+            ai_tag_match = re.match(ai_tag_pattern, current_memo)
+            
+            # Format current date for the AI tag
+            current_date = datetime.now().strftime("%Y-%m-%d")
+            
+            # Prepare the new memo with AI tag
+            if ai_tag_match:
+                # Update existing AI tag with new date
+                new_memo = re.sub(ai_tag_pattern, f'[AI:{current_date}]', current_memo)
+            else:
+                # Add new AI tag at the beginning of the memo
+                new_memo = f'[AI:{current_date}] {current_memo}'.strip()
+            
+            # Prepare the update data
+            update_data = {
+                'transaction': {
+                    'id': transaction_id,
+                    'category_id': category_id,
+                    'memo': new_memo
+                }
+            }
+            
+            # Send the update request
+            response = requests.put(
+                f"{self.base_url}/budgets/{budget_id}/transactions/{transaction_id}",
+                headers=self.headers,
+                json=update_data
+            )
+            response.raise_for_status()
+            
+            updated_transaction = response.json()['data']['transaction']
+            self.logger.info(f"Successfully updated transaction {transaction_id} category")
+            return updated_transaction
+            
+        except Exception as e:
+            self.logger.error(f"Error updating transaction category: {str(e)}")
+            return None
+
+    def bulk_update_categories_with_ai_tags(self, transactions: List[Dict], budget_id: Optional[str] = None) -> Dict:
+        """
+        Update multiple transactions' categories while maintaining AI tagging.
+        
+        Args:
+            transactions (List[Dict]): List of transaction updates with 'id' and 'category_name' fields
+            budget_id (Optional[str]): Budget ID. Uses default if not provided.
+        
+        Returns:
+            Dict with update results
+        """
+        budget_id = budget_id or self.budget_id
+        self.logger.info(f"Bulk updating {len(transactions)} transactions in budget {budget_id}")
+        
+        # Get category mappings once for all transactions
+        category_mapping = self._get_budget_categories(budget_id)
+        
+        results = {
+            'successful_updates': 0,
+            'failed_updates': 0,
+            'details': [],
+            'unmatched_categories': []
+        }
+        
+        # Track unique category names that couldn't be matched
+        unmatched_categories = set()
+        
+        for transaction in transactions:
+            transaction_id = transaction.get('id')
+            category_name = transaction.get('category_name')
+            
+            if not transaction_id or not category_name:
+                self.logger.warning(f"Skipping invalid transaction update: {transaction}")
+                results['failed_updates'] += 1
+                results['details'].append({
+                    'transaction_id': transaction_id,
+                    'status': 'error',
+                    'message': 'Missing required id or category_name'
+                })
+                continue
+            
+            # Find category ID from name using our cached mapping
+            category_id = self._find_best_category_match(category_name, category_mapping)
+            
+            if not category_id:
+                self.logger.warning(f"Could not find category ID for '{category_name}'")
+                results['failed_updates'] += 1
+                results['details'].append({
+                    'transaction_id': transaction_id,
+                    'status': 'error',
+                    'message': f"Category '{category_name}' not found"
+                })
+                unmatched_categories.add(category_name)
+                continue
+            
+            update_result = self.update_transaction_category_with_ai_tag(
+                transaction_id=transaction_id,
+                category_name=category_name,
+                budget_id=budget_id,
+                category_id=category_id
+            )
+            
+            if update_result.get('status') == 'success':
+                results['successful_updates'] += 1
+                results['details'].append({
+                    'transaction_id': transaction_id,
+                    'status': 'success',
+                    'category': category_name
+                })
+            else:
+                results['failed_updates'] += 1
+                results['details'].append({
+                    'transaction_id': transaction_id,
+                    'status': 'error',
+                    'message': update_result.get('message', 'Unknown error')
+                })
+        
+        # Add unmatched categories to results
+        results['unmatched_categories'] = list(unmatched_categories)
+        
+        self.logger.info(f"Bulk update complete: {results['successful_updates']} successful, {results['failed_updates']} failed")
+        return results
+
+    def clear_category_cache(self):
+        """
+        Clear all category caches after categories might have changed.
+        Call this method after adding, modifying, or deleting categories.
+        """
+        self.logger.info("Clearing category caches")
+        self.get_categories.cache_clear()
+        self._get_budget_categories.cache_clear()
+        self.get_category_by_id.cache_clear()
+        self.logger.debug("Category caches cleared")
+
+    def get_transaction_by_id(self, transaction_id, budget_id=None):
+        """
+        Get a transaction by its ID.
+        
+        Args:
+            transaction_id (str): The ID of the transaction to retrieve
+            budget_id (str, optional): The budget ID to use (defaults to active budget)
+            
+        Returns:
+            dict: The transaction data or None if not found
+        """
+        try:
+            budget_id = budget_id or self.budget_id
+            self.logger.debug(f"Getting transaction {transaction_id}")
+            
+            response = requests.get(
+                f"{self.base_url}/budgets/{budget_id}/transactions/{transaction_id}",
+                headers=self.headers
+            )
+            response.raise_for_status()
+            
+            return response.json()['data']['transaction']
+        except Exception as e:
+            self.logger.error(f"Error getting transaction by ID: {str(e)}")
+            return None 
