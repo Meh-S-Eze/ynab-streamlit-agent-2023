@@ -673,12 +673,28 @@ class YNABClient:
             # Convert amount to TransactionAmount if not already
             if 'amount' in transaction_dict and not isinstance(transaction_dict['amount'], TransactionAmount):
                 amount_value = transaction_dict['amount']
-                is_outflow = amount_value < 0 if isinstance(amount_value, (int, float)) else transaction_dict.get('is_outflow', True)
-                transaction_dict['amount'] = TransactionAmount(
-                    amount=abs(float(amount_value)) if isinstance(amount_value, (int, float)) else amount_value,
-                    is_outflow=is_outflow
-                )
-                self.logger.debug(f"Converted amount to TransactionAmount: raw_amount='{amount_value}', is_outflow={is_outflow}")
+                
+                # Handle the case where amount is already a dictionary with TransactionAmount fields
+                if isinstance(amount_value, dict) and 'amount' in amount_value:
+                    # Extract the nested amount value
+                    is_outflow = amount_value.get('is_outflow', True)
+                    currency = amount_value.get('currency', 'USD')
+                    amount_decimal = amount_value['amount']
+                    
+                    transaction_dict['amount'] = TransactionAmount(
+                        amount=amount_decimal,
+                        is_outflow=is_outflow,
+                        currency=currency
+                    )
+                else:
+                    # Regular case - amount is a numeric value
+                    is_outflow = amount_value < 0 if isinstance(amount_value, (int, float)) else transaction_dict.get('is_outflow', True)
+                    transaction_dict['amount'] = TransactionAmount(
+                        amount=abs(float(amount_value)) if isinstance(amount_value, (int, float)) else amount_value,
+                        is_outflow=is_outflow
+                    )
+                    
+                self.logger.debug(f"Converted amount to TransactionAmount: raw_amount='{amount_value}', is_outflow={transaction_dict['amount'].is_outflow}")
             
             # Handle payee lookup from cache if payee_name is provided but no payee_id
             if 'payee_name' in transaction_dict and transaction_dict['payee_name'] and not transaction_dict.get('payee_id'):
@@ -1146,6 +1162,11 @@ class YNABClient:
         Returns:
             int: The amount in milliunits, with sign based on is_outflow
         """
+        # Handle None values safely
+        if amount is None:
+            self.logger.warning("Received None for amount, defaulting to 0")
+            return 0
+            
         # Get the absolute amount value as an integer (already in milliunits)
         milliunit_amount = int(amount.amount)
         

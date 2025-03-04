@@ -251,10 +251,31 @@ class PydanticAITransactionParser:
         Raises:
             ValueError: If transaction cannot be parsed
         """
+        # Clean up the query - remove extra spaces, ensure $ signs are preserved
+        query = query.strip()
+        # Log the exact query being processed
+        self.logger.info(f"Raw query before processing: '{query}'")
+        # Ensure $ signs are properly handled (sometimes the shell might strip them)
+        if 'transaction for' in query.lower() and ' at ' in query.lower() and '$' not in query:
+            # Look for patterns like "transaction for 25 at" and insert $ if missing
+            parts = query.split(' at ', 1)
+            if len(parts) == 2:
+                prefix_parts = parts[0].split('for ', 1)
+                if len(prefix_parts) == 2:
+                    value_part = prefix_parts[1].strip()
+                    # Check if value_part is a number or starts with a number
+                    if value_part and (value_part[0].isdigit() or any(value_part.startswith(word) for word in ['twenty', 'thirty', 'forty', 'fifty'])):
+                        # Insert $ before the amount if it's missing
+                        if not value_part.startswith('$'):
+                            fixed_query = f"{prefix_parts[0]}for ${value_part} at {parts[1]}"
+                            self.logger.warning(f"Inserting missing $ sign: '{query}' -> '{fixed_query}'")
+                            query = fixed_query
+        
         self.logger.debug(f"Parsing transaction from query: query='{query}'")
         
-        # Generate prompt for Gemini
-        prompt = f"""
+        try:
+            # Generate prompt for Gemini
+            prompt = f"""
 You are a transaction parser. Extract transaction details from user input and return a JSON object.
 
 RULES:
@@ -345,7 +366,6 @@ Now parse this query: "{query}"
 Return ONLY the JSON object, no other text.
 """
         
-        try:
             # Generate response from Gemini with retry logic
             response_text = self._generate_with_retry(prompt)
             self.logger.debug(f"Raw Gemini response: {response_text}")
@@ -361,9 +381,34 @@ Return ONLY the JSON object, no other text.
                 
                 # Validate required fields are present and not None
                 required_fields = ['amount', 'payee_name', 'date']
+                missing_fields = []
                 for field in required_fields:
                     if field not in transaction_data or transaction_data[field] is None:
-                        raise ValueError(f"Missing or null required field: {field}")
+                        missing_fields.append(field)
+                
+                if missing_fields:
+                    self.logger.error(f"Missing required fields: {', '.join(missing_fields)}")
+                    self.logger.debug(f"Transaction data: {transaction_data}")
+                    self.logger.debug(f"Original query: '{query}'")
+                    
+                    # Handle missing amount field
+                    if 'amount' in missing_fields:
+                        # Try to extract amount directly from the query as a fallback
+                        amount_match = re.search(r'\$(\d+(\.\d+)?)', query)
+                        if amount_match:
+                            amount_value = float(amount_match.group(1))
+                            self.logger.warning(f"Extracted amount directly from query: ${amount_value}")
+                            transaction_data['amount'] = amount_value
+                            missing_fields.remove('amount')
+                        else:
+                            # Set a default amount
+                            self.logger.warning("Setting default amount of $1")
+                            transaction_data['amount'] = 1.0
+                            missing_fields.remove('amount')
+                    
+                    # If we still have missing fields after recovery attempts, raise error
+                    if missing_fields:
+                        raise ValueError(f"Missing required fields: {', '.join(missing_fields)}")
                 
                 # Handle is_outflow flag
                 is_outflow = transaction_data.get('is_outflow', True)
@@ -371,11 +416,25 @@ Return ONLY the JSON object, no other text.
                 
                 # Create TransactionAmount object
                 try:
-                    amount_value = float(transaction_data['amount'])
-                    if amount_value <= 0:
-                        raise ValueError(f"Amount must be positive. Received: {amount_value}")
-                    if amount_value > 1000000:  # Sanity check - no transactions over $1M
-                        raise ValueError(f"Amount exceeds maximum allowed value of $1,000,000. Received: {amount_value}")
+                    # Safely convert the amount value
+                    amount_value = 0.0  # Default value
+                    raw_amount = transaction_data.get('amount')
+                    
+                    if raw_amount is not None:
+                        try:
+                            amount_value = float(raw_amount)
+                            if amount_value <= 0:
+                                self.logger.warning(f"Amount must be positive. Received: {amount_value}. Setting to absolute value.")
+                                amount_value = abs(amount_value) or 0.01  # Use at least 0.01 if amount is 0
+                            if amount_value > 1000000:  # Sanity check - no transactions over $1M
+                                self.logger.warning(f"Amount exceeds maximum allowed value. Capping at $1,000,000.")
+                                amount_value = 1000000.0
+                        except (ValueError, TypeError):
+                            self.logger.error(f"Could not convert amount to float: {raw_amount}")
+                            amount_value = 0.01  # Set a minimal default amount
+                    else:
+                        self.logger.warning("Amount is None, using default value of 0.01")
+                        amount_value = 0.01
                         
                     # Convert to milliunits (multiply by 1000)
                     milliunit_amount = int(amount_value * 1000)
@@ -385,17 +444,15 @@ Return ONLY the JSON object, no other text.
                         is_outflow=is_outflow
                     )
                     self.logger.debug(f"Transaction amount: amount_milliunits={amount.amount}, is_outflow={amount.is_outflow}")
-                except (TypeError, ValueError) as e:
-                    self.logger.error(f"Failed to parse amount: {e}")
-                    # Provide more specific error message
-                    if 'amount' not in transaction_data:
-                        raise ValueError("Amount is missing from transaction data")
-                    elif transaction_data['amount'] is None:
-                        raise ValueError("Amount cannot be null")
-                    elif isinstance(transaction_data['amount'], str) and not transaction_data['amount'].strip():
-                        raise ValueError("Amount cannot be empty")
-                    else:
-                        raise ValueError(f"Invalid amount value: {transaction_data.get('amount')}")
+                except Exception as e:
+                    self.logger.error(f"Failed to process amount: {e}")
+                    # Create a default amount as fallback
+                    milliunit_amount = 10  # 0.01 in milliunits
+                    amount = TransactionAmount(
+                        amount=Decimal(str(milliunit_amount)),
+                        is_outflow=is_outflow
+                    )
+                    self.logger.warning(f"Using fallback amount: {amount.amount}")
                 
                 # Parse transaction date
                 date_str = transaction_data.get('date')

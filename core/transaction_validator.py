@@ -84,10 +84,9 @@ class TransactionValidator:
                     'transaction': transaction.dict(),
                     'error': str(e)
                 })
-                self.logger.warning(f"Transaction validation failed: {e}")
         
         if errors:
-            self.logger.warning(f"Some transactions failed validation: {errors}")
+            self.logger.warning(f"Validation errors: {errors}")
         
         return validated_transactions
     
@@ -188,7 +187,7 @@ class TransactionValidator:
     
     def validate(self, transaction: TransactionCreate) -> TransactionCreate:
         """
-        Validate a single transaction without checking for duplicates
+        Validate a single transaction without checking against existing transactions
         
         Args:
             transaction (TransactionCreate): Transaction to validate
@@ -205,15 +204,15 @@ class TransactionValidator:
             if transaction.date > date.today():
                 raise FutureDateError(f"Transaction date {transaction.date} is in the future")
             
-            # Validate amount
+            # Additional validation logic
             self._validate_amount(transaction.amount)
-            
-            # Validate required fields
             self._validate_required_fields(transaction)
             
             return transaction
-        except (FutureDateError, InvalidTransactionError):
+            
+        except FutureDateError as e:
+            # Re-raise these specific errors
             raise
         except Exception as e:
-            self.logger.error(f"Unexpected validation error: {str(e)}")
-            raise InvalidTransactionError(f"Validation failed: {str(e)}") 
+            self.logger.error(f"Transaction validation failed: {e}")
+            raise InvalidTransactionError(f"Transaction validation failed: {str(e)}") 

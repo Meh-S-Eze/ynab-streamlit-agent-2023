@@ -1,0 +1,51 @@
+---
+description: When user says they need to send a report to cursor team
+globs: 
+alwaysApply: false
+---
+Reporting Issue:
+  title: "Reporting to Cursor IDE"
+  description: "Technical guide for gathering logs, errors and system info when reporting Cursor app issues"
+  steps:
+    - step: 1
+      title: "Screenshot of issue"
+      description: "Capture a screenshot of the issue, making sure to redact any sensitive information."
+    
+    - step: 2
+      title: "Steps to reproduce"
+      description: "Document the exact steps needed to reproduce the issue."
+    
+    - step: 3
+      title: "System Information"
+      description: "Retrieve system information from: Cursor > Help > About"
+    
+    - step: 4
+      title: "VPN/Proxy Status"
+      description: "Note if you're using a VPN or proxy like Zscaler."
+    
+    - step: 5
+      title: "Console Errors"
+      description: "Check developer tools console errors"
+      instructions:
+        - "Open developer tools via: Cursor > Help > Toggle Developer Tools"
+        - "Click Console"
+        - "Look for any related errors"
+    
+    - step: 6
+      title: "Logs"
+      description: "Access logs through one of these methods"
+      locations:
+        windows: "C:\\Users\\<your-user-name>\\AppData\\Roaming\\Cursor\\logs"
+      alternative_methods:
+        - method: "Command Palette"
+          instructions:
+            - "Ctrl + Shift + P (command palette)"
+            - "Type and select Developer: Open Logs Folder"
+        - method: "Terminal Output"
+          instructions: "Cursor > Terminal > Output > select Window or other Cursor options"
+  
+  user_information:
+    - "Email address"
+    - "Cursor version"
+    - "Description of what you were trying to accomplish"
+    - "Frequency of the issue occurrence"
