@@ -1,0 +1,120 @@
+---
+description: Quality Standards and Completion Criteria
+globs: **/*.py
+---
+
+# Quality Standards and Completion Criteria
+# Guidelines for measuring completion and ensuring quality
+
+## Code Quality Standards
+code_quality_standards:
+  style:
+    - "Follow PEP 8 guidelines for Python code"
+    - "Maintain consistent code formatting using Black"
+    - "Keep functions focused on single responsibility"
+    - "Limit function complexity and length"
+  
+  documentation:
+    - "All public functions must have docstrings"
+    - "Document parameters, return values, and exceptions"
+    - "Include examples in docstrings where appropriate"
+    - "Maintain up-to-date module-level documentation"
+  
+  structure:
+    - "Follow Core-First development approach"
+    - "Separate business logic from interface"
+    - "Use dependency injection for external services"
+    - "Maintain clear module boundaries"
+  
+  error_handling:
+    - "Validate inputs at function boundaries"
+    - "Use appropriate exception types"
+    - "Provide meaningful error messages"
+    - "Log errors with sufficient context"
+  
+  reference:
+    architecture: "See architecture_principles.mdc for detailed structure guidelines"
+
+## Refactoring Completion Criteria
+refactoring_completion_criteria:
+  functional_parity:
+    - "All existing features must continue to work"
+    - "Core transaction functionality must be preserved"
+    - "No regression in error handling or validation"
+    - "Natural language queries maintain consistent behavior"
+  
+  validation_methods:
+    - "End-to-end natural language testing"
+    - "Compare output of old vs. new implementation"
+    - "Verify API call patterns match expectations"
+    - "Confirm transaction tagging behavior is preserved"
+  
+  reference:
+    testing: "See testing_guidelines.mdc for detailed testing approach"
+
+## Performance Standards
+performance_standards:
+  response_time:
+    - "Natural language queries should respond within 3 seconds"
+    - "Transaction creation should complete within 5 seconds"
+    - "Bulk operations should provide progress feedback"
+    - "User interface should remain responsive during operations"
+  
+  resource_usage:
+    - "Memory usage should be appropriate for operation"
+    - "Limit YNAB API calls through effective caching"
+    - "Minimize AI API token usage through prompt efficiency"
+    - "Respect rate limits for all external services"
+  
+  reliability:
+    - "Implement circuit breakers for all external services"
+    - "Gracefully handle service unavailability"
+    - "Provide clear error messages for failures"
+    - "Implement appropriate retry mechanisms"
+
+## Documentation Standards
+documentation_standards:
+  project_documentation:
+    - "Maintain up-to-date README with setup instructions"
+    - "Document environment variables and configuration"
+    - "Provide examples of common operations"
+    - "Include troubleshooting guide"
+  
+  code_documentation:
+    - "Document all public interfaces with docstrings"
+    - "Include code examples for complex operations"
+    - "Maintain inline comments for complex logic"
+    - "Document expected output and side effects"
+  
+  architectural_documentation:
+    - "Maintain high-level architecture diagrams"
+    - "Document component interactions and dependencies"
+    - "Include sequence diagrams for complex flows"
+    - "Update documentation when architecture changes"
+
+## Post-Refactoring Roadmap
+post_refactoring_roadmap:
+  focus_areas:
+    - "Complete YNAB API management capabilities"
+    - "Implement budget categorization functionality"
+    - "Add account selection and management features"
+    - "Enhance transaction posting with validation"
+    - "Expand AI-assisted categorization capabilities"
+  
+  ynab_api_priorities:
+    - "Budget categorization system with AI-assisted matching"
+    - "Account selection and management interfaces"
+    - "Monthly budget allocation and tracking"
+    - "Budget vs. actual reporting capabilities"
+    - "Historical data analysis for spending patterns"
+  
+  transition_process:
+    - "Preserve existing transaction posting functionality"
+    - "Implement features in order of dependency (accounts → categories → budgets)"
+    - "Maintain backward compatibility with existing transaction flows"
+  
+  governance:
+    - "Regular code reviews for new features"
+    - "Maintain test coverage above 80%"
+    - "Document all new functionality"
+    - "Update architecture documentation as needed" 

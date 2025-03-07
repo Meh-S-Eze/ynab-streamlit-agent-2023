@@ -1,0 +1,152 @@
+{
+  "version": "1.0",
+  "examples": [
+    {
+      "query": "groceries",
+      "category_groups": [
+        {
+          "name": "Food",
+          "categories": [
+            {"name": "Groceries"},
+            {"name": "Dining Out"},
+            {"name": "Snacks"}
+          ]
+        },
+        {
+          "name": "Shopping",
+          "categories": [
+            {"name": "Household Goods"},
+            {"name": "Clothing"}
+          ]
+        }
+      ],
+      "category": {
+        "name": "Groceries",
+        "group_name": "Food"
+      },
+      "confidence": 1.0,
+      "explanation": "Perfect match for the 'Groceries' category in the 'Food' group."
+    },
+    {
+      "query": "food",
+      "category_groups": [
+        {
+          "name": "Food",
+          "categories": [
+            {"name": "Groceries"},
+            {"name": "Dining Out"},
+            {"name": "Snacks"}
+          ]
+        },
+        {
+          "name": "Shopping",
+          "categories": [
+            {"name": "Household Goods"},
+            {"name": "Clothing"}
+          ]
+        }
+      ],
+      "category": {
+        "name": "Groceries",
+        "group_name": "Food"
+      },
+      "confidence": 0.7,
+      "explanation": "Generic 'food' matches the 'Groceries' category with moderate confidence as groceries is the most common type of food purchase."
+    },
+    {
+      "query": "restaurant",
+      "category_groups": [
+        {
+          "name": "Food",
+          "categories": [
+            {"name": "Groceries"},
+            {"name": "Dining Out"},
+            {"name": "Snacks"}
+          ]
+        },
+        {
+          "name": "Entertainment",
+          "categories": [
+            {"name": "Movies"},
+            {"name": "Events"}
+          ]
+        }
+      ],
+      "category": {
+        "name": "Dining Out",
+        "group_name": "Food"
+      },
+      "confidence": 0.9,
+      "explanation": "High confidence match for 'Dining Out' as restaurants are closely associated with dining out."
+    },
+    {
+      "query": "walmart",
+      "category_groups": [
+        {
+          "name": "Food",
+          "categories": [
+            {"name": "Groceries"},
+            {"name": "Dining Out"}
+          ]
+        },
+        {
+          "name": "Shopping",
+          "categories": [
+            {"name": "Household Goods"},
+            {"name": "Clothing"}
+          ]
+        }
+      ],
+      "category": {
+        "name": "Groceries",
+        "group_name": "Food"
+      },
+      "confidence": 0.6,
+      "explanation": "Moderate confidence for 'Groceries' as Walmart sells groceries but also many other items."
+    },
+    {
+      "scenario": "Create a more organized budget structure",
+      "current_hierarchy": [
+        {
+          "name": "General",
+          "categories": [
+            {"name": "Food"},
+            {"name": "Rent"},
+            {"name": "Car Expenses"},
+            {"name": "Entertainment"}
+          ]
+        }
+      ],
+      "suggested_changes": [
+        "Create a 'Housing' group and move 'Rent' there",
+        "Create a dedicated 'Food' group with subcategories for 'Groceries' and 'Dining Out'",
+        "Create a 'Transportation' group and move 'Car Expenses' there with subcategories for 'Fuel' and 'Maintenance'",
+        "Keep 'Entertainment' in its own group"
+      ],
+      "explanation": "Reorganizing from a generic 'General' group into purpose-based groups makes budgeting clearer and more effective."
+    },
+    {
+      "scenario": "Too many specific categories",
+      "current_hierarchy": [
+        {
+          "name": "Food",
+          "categories": [
+            {"name": "Groceries - Whole Foods"},
+            {"name": "Groceries - Trader Joe's"},
+            {"name": "Groceries - Safeway"},
+            {"name": "Fast Food"},
+            {"name": "Restaurants - Italian"},
+            {"name": "Restaurants - Mexican"},
+            {"name": "Coffee Shops"}
+          ]
+        }
+      ],
+      "suggested_changes": [
+        "Consolidate all 'Groceries' categories into a single 'Groceries' category",
+        "Combine restaurant categories into 'Dining Out'",
+        "Keep 'Coffee Shops' if frequent enough to warrant tracking separately"
+      ],
+      "explanation": "Too many specific categories makes budgeting harder to maintain. Consolidate similar categories unless there's a specific reason to track them separately."
+    }
+  ]
+}

@@ -1,0 +1,116 @@
+---
+description: YNAB API Integration Guidelines
+globs: src/api/*.py,src/services/*.py,src/models/*.py
+---
+
+# YNAB API Integration Guidelines
+# Rules and best practices for integrating with the YNAB API
+
+## API Configuration
+api_configuration:
+  base_url: "https://api.ynab.com/v1"
+  api_key_source: "YNAB_API_KEY environment variable"
+  budget_id_restrictions:
+    - "ONLY access the development budget: YNAB_BUDGET_DEV=7c8d67c8-ed70-4ba8-a25e-931a2f294167"
+    - "NEVER access any other budgets in code or tests"
+  authentication:
+    method: "Bearer token authentication"
+    implementation: "Include in Authorization header of all requests"
+    security: "Never expose API keys in client-side code or logs"
+  
+  reference:
+    environment: "See environment_config.mdc for detailed environment variable requirements"
+
+## Best Practices
+best_practices:
+  caching:
+    implementation: "Implement caching for all API responses"
+    approach: "Use @lru_cache where appropriate"
+    invalidation: "Clear cache on known data changes"
+    
+  delta_requests:
+    implementation: "Use delta requests when available"
+    rationale: "Reduces API load and improves performance"
+    endpoints: "Transactions, accounts, and budget endpoints support delta requests"
+  
+  fault_tolerance:
+    implementation: "Implement circuit breakers for API calls"
+    response_handling: "Handle 429, 500, and network errors gracefully"
+    retry_strategy: "Implement exponential backoff for temporary failures"
+    
+  specific_requests:
+    implementation: "Make targeted requests rather than broad ones"
+    example: "Request specific category instead of all categories when possible"
+    rationale: "Reduces API load and improves response time"
+
+## Entity Management
+entity_management:
+  matching:
+    implementation: "Implement entity matching to prevent duplicates"
+    entities:
+      - "Payees"
+      - "Categories"
+      - "Accounts"
+    matching_algorithm: "Fuzzy matching with confidence threshold"
+  
+  caching:
+    implementation: "Cache entity IDs to minimize API calls"
+    approach: "Store entity ID mappings in memory and/or persistent cache"
+    refresh_strategy: "Refresh cache at application startup or on demand"
+
+## API Client Structure
+api_client_structure:
+  base_client:
+    location: "src/api/base_client.py"
+    responsibilities:
+      - "Authentication management"
+      - "Common request handling"
+      - "Error handling and logging"
+      - "Circuit breaker integration"
+  
+  specialized_clients:
+    - name: "TransactionsAPI"
+      location: "src/api/transactions_api.py"
+      responsibilities: "Transaction-specific endpoints and operations"
+    
+    - name: "CategoriesAPI"
+      location: "src/api/categories_api.py"
+      responsibilities: "Category-specific endpoints and operations"
+    
+    - name: "BudgetsAPI"
+      location: "src/api/budgets_api.py"
+      responsibilities: "Budget-specific endpoints and operations"
+    
+    - name: "AccountsAPI"
+      location: "src/api/accounts_api.py"
+      responsibilities: "Account-specific endpoints and operations"
+  
+  reference:
+    refactoring: "See refactoring_plan.mdc for implementation phases and directory structure"
+
+## Post-Refactoring Priorities
+post_refactoring_priorities:
+  - "Budget categorization system"
+  - "Account selection and management"
+  - "Monthly budget allocation and tracking"
+  - "Budget vs. actual reporting"
+  
+  reference:
+    roadmap: "See quality_standards.mdc for complete post-refactoring roadmap"
+
+## Security Requirements
+security_requirements:
+  api_key_handling:
+    - "Store API keys in environment variables only"
+    - "Never commit API keys to version control"
+    - "Never log API keys or include in error reports"
+  
+  authentication:
+    - "Use Bearer token authentication for all requests"
+    - "Validate token presence before making requests"
+    - "Handle authentication errors gracefully"
+  
+  data_protection:
+    - "Treat all YNAB data as sensitive information"
+    - "Limit data access to authorized users only"
+    - "Never expose complete transaction data in logs" 

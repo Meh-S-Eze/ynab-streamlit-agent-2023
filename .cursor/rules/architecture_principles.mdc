@@ -1,0 +1,78 @@
+---
+description: Architecture Principles
+globs: src/**/*.py,*.py
+---
+
+# Architecture Principles
+# Core architectural guidelines for the YNAB integration application
+
+## Core-First Development
+core_first_development:
+  principles:
+    - Core logic resides in core/ directory
+    - CLI and Streamlit serve as thin access layers
+    - Core logic should never import from interface layers
+    - Maintain clear separation between data models and processing logic
+  implementation:
+    core_location: "src/core/"
+    interface_layers:
+      - "src/cli/"
+      - "src/streamlit/"
+    prohibited_imports:
+      - "Never import interface code into core components"
+      - "Keep all business logic in core, independent of UI"
+
+## Pydantic AI Integration
+pydantic_ai_integration:
+  principles:
+    - Use Pydantic BaseModel for all data structures
+    - Follow the Agent pattern with structured input/output
+    - Define clear tool functions with comprehensive docstrings
+    - Use dependency injection pattern for services
+    - Create standalone Agents for specific tasks
+    - Ensure proper validation of AI-extracted fields before use
+  implementation:
+    model_pattern: "class ModelName(BaseModel):"
+    agent_pattern: "Agent(model_name, deps_type=DepsClass, result_type=ResultClass)"
+    tool_pattern: "@agent.tool"
+    system_prompt_pattern: "@agent.system_prompt"
+    validation_approach: "Always validate AI outputs using Pydantic models before use"
+  
+  reference:
+    detailed_guidelines: "See ai_integration.mdc for detailed AI integration guidelines"
+
+## Natural Language Processing
+natural_language_processing:
+  principles:
+    - Process natural language queries through consistent patterns
+    - Support different query types for various financial operations
+    - Implement robust error handling for ambiguous inputs
+    - Extract structured information from free-form text
+  implementation:
+    query_processing: "src/core/services/nlp_service.py"
+    supported_operations:
+      - "Transaction searching and filtering"
+      - "Budget analysis and reporting"
+      - "Transaction creation and modification"
+      - "Category management"
+    reference:
+      testing: "See testing_guidelines.mdc for natural language testing approach"
+      ai_integration: "See ai_integration.mdc for prompt management"
+
+## Error Handling & Logging
+error_handling:
+  principles:
+    - Log at appropriate levels (DEBUG, INFO, WARNING, ERROR)
+    - Include context variables in log messages
+    - Provide user-friendly error messages
+    - Implement graceful fallbacks for AI components
+    - Use circuit breakers for external services
+    - Log raw AI inputs and outputs for debugging purposes
+  implementation:
+    log_levels:
+      debug: "Detailed information, typically of interest only when diagnosing problems"
+      info: "Confirmation that things are working as expected"
+      warning: "Indication that something unexpected happened, but the application is still working"
+      error: "Due to a more serious problem, the application couldn't perform some function"
+    circuit_breaker: "Implement in src/utils/circuit_breaker.py"
+    context_logging: "Always include relevant entity IDs and operation types in log messages" 

@@ -20,18 +20,20 @@ A sophisticated financial assistant that leverages AI and the YNAB (You Need A B
 - **Data Validation**: Pydantic
 - **Logging**: Structured Logging
 
-## Key Components
+## Architecture
 
-### Core Modules
-- `core/gemini_analyzer.py`: AI-powered transaction parsing and analysis
-- `core/ynab_client.py`: YNAB API interaction
-- `core/shared_models.py`: Data models and validation
+The application follows a modular architecture with strict separation of concerns:
 
-### Key Capabilities
-- Robust amount normalization
-- Comprehensive error handling
-- Context-aware transaction processing
-- Semantic matching for categorization
+### Core Layer
+- **API**: Base and specialized API clients for YNAB
+- **Services**: Business logic for transactions, categories, and analysis
+- **Models**: Data structures and validation
+- **Utils**: Reusable utilities for caching, error handling, etc.
+- **Prompts**: AI prompt management and examples
+
+### Interface Layer
+- **CLI**: Command-line interface for script-based interactions
+- **Streamlit**: Web interface for interactive usage
 
 ## Installation
 
@@ -60,10 +62,13 @@ GEMINI_API_KEY=your_gemini_api_key
 
 ```bash
 # CLI Interface
-python -m cli.natural_language_cli process "Create a transaction for $50 at Target"
+./run_cli.py analyze-budget  # List budgets or analyze specific budget
+
+# Natural Language CLI
+./run_nl_cli.py "Show my grocery spending for last month"  # Process natural language query
 
 # Streamlit Web Interface
-streamlit run app.py
+./run_streamlit.py  # Launch the web interface
 ```
 
 ## Development Principles
@@ -72,6 +77,25 @@ streamlit run app.py
 - 🧩 Dependency Injection
 - 🔍 Semantic Matching
 - 📈 Confidence Scoring
+- 🔄 Clean Architecture
+
+## Directory Structure
+
+```
+src/
+├── core/                      # Core business logic
+│   ├── api/                   # YNAB API clients
+│   ├── services/              # Business services
+│   ├── models/                # Data models
+│   ├── utils/                 # Utilities
+│   ├── prompts/               # AI prompts
+│   └── container.py           # Dependency injection container
+├── cli/                       # CLI interface
+│   ├── main.py                # Main CLI commands
+│   └── natural_language_cli.py # Natural language CLI
+└── streamlit/                 # Web interface
+    └── app.py                 # Streamlit application
+```
 
 ## Roadmap
 

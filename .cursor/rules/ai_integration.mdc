@@ -1,0 +1,137 @@
+---
+description: AI Integration Guidelines
+globs: src/prompts/*.py,src/services/*_service.py
+---
+
+# AI Integration Guidelines
+# Standards for integrating OpenAI and Gemini AI services in the application
+
+## AI Provider Configuration
+ai_provider_configuration:
+  openai:
+    models:
+      primary:
+        name: "gpt-4o"
+        environment_variable: "OPENAI_MODEL"
+        usage: "General AI completion tasks"
+      reasoning:
+        name: "gpt-4o-2024-05-13"
+        environment_variable: "OPENAI_REASONING_MODEL"
+        usage: "Enhanced reasoning capabilities"
+    authentication:
+      api_key: "OPENAI_API_KEY environment variable"
+      project_id: "OPENAI_PROJECT_ID environment variable"
+  
+  gemini:
+    models:
+      primary:
+        name: "gemini-1.5-flash"
+        usage: "Faster processing for simpler AI tasks"
+      reasoning:
+        name: "gemini-2.0-flash-thinking-exp-01-21"
+        usage: "Enhanced thinking capabilities"
+    authentication:
+      api_key: "GEMINI_API_KEY environment variable"
+  
+  reference:
+    environment: "See environment_config.mdc for detailed environment variable requirements"
+
+## API Integration
+api_integration:
+  client_implementation:
+    location: "src/services/ai_service.py"
+    responsibilities:
+      - "Manage API connections to AI providers"
+      - "Handle authentication and errors"
+      - "Implement provider fallback strategy"
+      - "Log AI interactions appropriately"
+  
+  provider_selection:
+    primary: "OpenAI"
+    fallback: "Gemini"
+    criteria:
+      - "Response time requirements"
+      - "Cost considerations"
+      - "Query complexity"
+      - "Historical performance"
+    fallback_triggers:
+      - "Primary provider failure"
+      - "Rate limiting detection"
+      - "Timeout thresholds exceeded"
+
+## Prompt Management
+prompt_management:
+  structure:
+    base_prompt_class:
+      location: "src/prompts/base_prompts.py"
+      responsibilities:
+        - "Define common prompt generation methods"
+        - "Handle example formatting and loading"
+        - "Implement version tracking for prompts"
+    
+    specialized_prompts:
+      - name: "TransactionPrompts"
+        location: "src/prompts/transaction_prompts.py"
+        responsibilities: "Transaction-specific prompt generation"
+      
+      - name: "CategoryPrompts"
+        location: "src/prompts/category_prompts.py"
+        responsibilities: "Category-specific prompt generation"
+  
+  examples_management:
+    storage: "src/prompts/examples/"
+    format: "JSON files"
+    structure:
+      - "User request example"
+      - "Expected model response"
+      - "Context information if needed"
+    files:
+      - "transaction_examples.json"
+      - "category_examples.json"
+  
+  reference:
+    architecture: "See architecture_principles.mdc for Pydantic AI integration patterns"
+    testing: "See testing_guidelines.mdc for prompt testing and evaluation"
+
+## Transaction Tagging System
+transaction_tagging:
+  ai_tag_format: "[AI {action_type} {date}]"
+  action_types:
+    - "created" - "For AI-created transactions"
+    - "modified" - "For AI-modified transactions"
+    - "categorized" - "For AI-categorized transactions"
+  
+  implementation:
+    tag_detection: "Use regex pattern to identify AI tags"
+    tag_preservation: "Always maintain AI tags during updates"
+    tag_generation: "Include current date in ISO format"
+  
+  service_integration:
+    location: "src/services/ai_tagging_service.py"
+    methods:
+      - "apply_ai_tag(memo, action_type)"
+      - "detect_ai_tag(memo)"
+      - "update_ai_tag(memo, new_action)"
+      - "has_ai_tag(memo)"
+
+## Natural Language Query Processing
+natural_language_processing:
+  implementation:
+    location: "src/services/transaction_service.py"
+    method: "process_natural_language_query"
+  
+  capabilities:
+    - "Process grocery-related queries"
+    - "Calculate total spending over periods"
+    - "Identify transactions by category or payee"
+    - "Provide spending insights"
+  
+  query_patterns:
+    grocery: "Filter transactions with grocery-related keywords"
+    spending: "Calculate total outflow over specified period"
+    category: "Filter transactions by category name"
+    payee: "Filter transactions by payee name"
+  
+  reference:
+    testing: "See testing_guidelines.mdc for natural language testing approach"
+    architecture: "See architecture_principles.mdc for natural language processing principles" 

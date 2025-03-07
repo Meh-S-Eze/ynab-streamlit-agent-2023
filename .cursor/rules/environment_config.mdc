@@ -1,0 +1,107 @@
+---
+description: Environment and Configuration Management
+globs: src/config/*.py,*.env,*.env.example
+---
+
+# Environment and Configuration Management
+# Guidelines for managing environment variables and configuration
+
+## Environment Variables
+environment_variables:
+  required:
+    - name: "YNAB_API_KEY"
+      description: "API key for YNAB access"
+      security: "HIGH - Grants full access to YNAB budgets"
+      storage: "Environment variable"
+      
+    - name: "YNAB_BUDGET_DEV"
+      description: "Development budget ID to use for testing"
+      default: "7c8d67c8-ed70-4ba8-a25e-931a2f294167"
+      security: "MEDIUM - Identifies which budget to operate on"
+      
+    - name: "OPENAI_API_KEY"
+      description: "API key for OpenAI services"
+      security: "HIGH - Grants access to paid OpenAI services"
+      storage: "Environment variable"
+      
+    - name: "GEMINI_API_KEY"
+      description: "API key for Google Gemini AI services"
+      security: "HIGH - Grants access to paid Gemini services"
+      storage: "Environment variable"
+      
+  optional:
+    - name: "LOG_LEVEL"
+      description: "Logging verbosity"
+      default: "INFO"
+      options: "DEBUG, INFO, WARNING, ERROR"
+      
+    - name: "OPENAI_MODEL"
+      description: "OpenAI model to use for completions"
+      default: "gpt-4o"
+      security: "LOW - Determines model selection only"
+      
+    - name: "AI_PROVIDER"
+      description: "Which AI provider to use as primary"
+      default: "OPENAI"
+      options: "OPENAI, GEMINI"
+      
+    - name: "CACHE_DURATION"
+      description: "Duration in seconds to cache API responses"
+      default: "300"
+      
+    - name: "API_TIMEOUT"
+      description: "Timeout in seconds for API requests"
+      default: "30"
+
+## Configuration Management
+configuration_management:
+  principles:
+    - "Use environment variables for all configuration"
+    - "Validate all config values at startup"
+    - "Provide sensible defaults where safe"
+    - "Document all configuration options"
+    - "Separate configuration from code"
+    
+  implementation:
+    location: "src/config/config.py"
+    pattern: "Pydantic configuration model"
+    validation: "Validate configuration at application startup"
+    defaults_file: ".env.example"
+    loading: "Load from .env file using python-dotenv"
+    
+  secret_handling:
+    api_keys: "Load from environment variables only"
+    sensitive_data: "Never log or expose sensitive values"
+    
+  reference:
+    security: "See security_requirements section of ynab_api_integration.mdc"
+
+## Security Guidelines
+security_guidelines:
+  environment_variables:
+    - "Never commit .env files to version control"
+    - "Use .env.example with dummy values for documentation"
+    - "Rotate keys if accidentally exposed"
+    
+  api_key_handling:
+    - "Store API keys in environment variables only"
+    - "Never hardcode API keys in source code"
+    - "Redact API keys from logs and error reports"
+    
+  least_privilege:
+    - "Use development budget for testing"
+    - "Create specific API keys for different environments"
+    - "Limit scope of API keys where possible"
+
+## Model Selection Guidelines
+model_selection:
+  implementation:
+    principle: "Use environment variables to configure AI models"
+    fallback: "Define fallback models if primary is unavailable"
+    
+  usage_criteria:
+    cost: "Balance cost and performance needs"
+    performance: "Select models based on task complexity"
+    
+  reference:
+    ai_integration: "See ai_integration.mdc for detailed model configuration" 

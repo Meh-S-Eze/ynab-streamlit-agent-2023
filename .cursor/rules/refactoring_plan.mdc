@@ -1,0 +1,202 @@
+---
+description: YNAB Codebase Refactoring Plan
+globs: src/**/*.py
+---
+
+# YNAB Codebase Refactoring Plan
+# Plan for refactoring the YNAB integration application
+
+## Goals and Principles
+goals_and_principles:
+  primary_goals:
+    - "Improve code organization and maintainability"
+    - "Enhance testability and error handling"
+    - "Standardize AI integrations"
+    - "Support additional YNAB features beyond transactions"
+    - "Prepare codebase for future feature development"
+  
+  refactoring_principles:
+    - "Preserve existing functionality and behavior"
+    - "Implement changes incrementally and test thoroughly"
+    - "Follow the Core-First development approach"
+    - "Separate business logic from interface layers"
+    - "Standardize error handling and logging"
+    - "Implement dependency injection for services"
+  
+  reference:
+    testing: "See testing_guidelines.mdc for testing approach during refactoring"
+    quality: "See quality_standards.mdc for completion criteria"
+
+## New Directory Structure
+new_directory_structure:
+  src:
+    core:
+      - models: "Pydantic models representing business objects"
+      - services: "Business logic for operations on models"
+      - exceptions: "Custom exception types for business errors"
+      - utils: "General utility functions and helpers"
+    
+    api:
+      - ynab: "YNAB API client implementations"
+      - ai: "AI service client implementations"
+      - common: "Common API handling functionality"
+    
+    cli:
+      - commands: "CLI command implementations"
+      - utils: "CLI-specific utilities"
+    
+    streamlit:
+      - pages: "Streamlit page implementations"
+      - components: "Reusable UI components"
+      - utils: "Streamlit-specific utilities"
+    
+    prompts:
+      - templates: "System prompts and templates"
+      - examples: "Examples for use in prompts"
+    
+    config:
+      - environment.py: "Environment variable management"
+      - logging.py: "Logging configuration"
+    
+    tests:
+      - unit: "Unit tests for core functionality"
+      - integration: "Integration tests for services"
+      - e2e: "End-to-end tests for user workflows"
+
+## Refactoring Phases
+refactoring_phases:
+  - id: 1
+    name: "Setup project structure"
+    tasks:
+      - "Create new directory structure"
+      - "Set up configuration management"
+      - "Implement logging framework"
+      - "Define base models and exceptions"
+  
+  - id: 2
+    name: "Implement core models"
+    tasks:
+      - "Create Pydantic models for YNAB entities"
+      - "Implement model validation and conversion"
+      - "Define relationships between models"
+      - "Write tests for model functionality"
+  
+  - id: 3
+    name: "Implement API clients"
+    tasks:
+      - "Create base API client with error handling"
+      - "Implement YNAB API client"
+      - "Implement AI service clients"
+      - "Write tests for API clients"
+  
+  - id: 4
+    name: "Implement core services"
+    tasks:
+      - "Create transaction service"
+      - "Implement category service"
+      - "Implement account service"
+      - "Implement budget service"
+      - "Write tests for core services"
+  
+  - id: 5
+    name: "Implement AI prompts and tools"
+    tasks:
+      - "Create base prompt class"
+      - "Implement system prompts for different tasks"
+      - "Create prompt examples"
+      - "Implement AI tools and agents"
+      - "Write tests for AI functionality"
+  
+  - id: 6
+    name: "Implement CLI interface"
+    tasks:
+      - "Create base CLI command structure"
+      - "Implement commands for transactions"
+      - "Implement natural language processing commands"
+      - "Write tests for CLI functionality"
+  
+  - id: 7
+    name: "Implement Streamlit interface"
+    tasks:
+      - "Create base Streamlit layout"
+      - "Implement transaction pages"
+      - "Implement natural language processing components"
+      - "Write tests for Streamlit functionality"
+  
+  - id: 8
+    name: "Migration and testing"
+    tasks:
+      - "Migrate existing functionality to new structure"
+      - "Conduct end-to-end testing"
+      - "Fix any regression issues"
+      - "Update documentation"
+  
+  - id: 9
+    name: "Budget and category implementation"
+    tasks:
+      - "Enhance category management"
+      - "Implement budget tracking"
+      - "Add reporting features"
+  
+  - id: 10
+    name: "Account management implementation"
+    tasks:
+      - "Enhance account selection"
+      - "Implement account balance tracking"
+      - "Add account transfer functionality"
+
+## Components and Dependencies
+components_and_dependencies:
+  transaction_service:
+    description: "Core service for managing transactions"
+    dependencies:
+      - "YNAB Transactions API"
+      - "Category Service"
+      - "Account Service"
+      - "AI Service for categorization"
+    key_responsibilities:
+      - "Create, read, update transactions"
+      - "Process natural language for transactions"
+      - "Apply AI categorization"
+  
+  category_service:
+    description: "Service for managing categories"
+    dependencies:
+      - "YNAB Categories API"
+      - "AI Service for matching"
+    key_responsibilities:
+      - "List and search categories"
+      - "Match descriptions to categories"
+      - "Provide category suggestions"
+  
+  account_service:
+    description: "Service for managing accounts"
+    dependencies:
+      - "YNAB Accounts API"
+    key_responsibilities:
+      - "List and search accounts"
+      - "Track account balances"
+      - "Handle account selection"
+  
+  budget_service:
+    description: "Service for managing budgets"
+    dependencies:
+      - "YNAB Budgets API"
+      - "Category Service"
+    key_responsibilities:
+      - "Track budget allocation"
+      - "Monitor spending vs budget"
+      - "Provide budget insights"
+  
+  ai_service:
+    description: "Service for AI operations"
+    dependencies:
+      - "OpenAI API"
+      - "Gemini API"
+    key_responsibilities:
+      - "Handle AI provider selection"
+      - "Manage prompts and completions"
+      - "Process natural language inputs"
+  
+  reference:
+    ai_integration: "See ai_integration.mdc for detailed AI service guidelines" 

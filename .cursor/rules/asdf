@@ -1,0 +1,44 @@
+Prompt 1: Architecture and Component Overview
+Focus on the high-level architecture, component interactions, and system design. Request:
+	•	Three-tier architecture diagram
+	•	Component interaction flows
+	•	Data flow between YNAB API, MCP layer, and user interfaces
+	•	Overview of key technologies and their roles
+Prompt 2: YNAB API and MCP Integration
+Focus on the specific integration between YNAB API and MCP:
+	•	Authentication and session management
+	•	Handling YNAB API complexities (obtaining payee IDs, category IDs)
+	•	MCP resource mapping to YNAB entities
+	•	Sample code for key API integration points
+Prompt 3: Pydantic AI Implementation
+Focus specifically on how to leverage Pydantic AI:
+	•	Schema definitions for YNAB data
+	•	Type enforcement strategies
+	•	Integration patterns with MCP
+	•	Model designs for command processing
+Prompt 4: Natural Language CLI Interface
+Focus on the command-line interface:
+	•	Command parsing strategies with LangChain
+	•	Sample command schema design
+	•	Error handling for misinterpreted commands
+	•	Examples of supported natural language commands
+Prompt 5: Streamlit Chat Integration
+Focus on the Streamlit chat functionality:
+	•	Chat interface design
+	•	Integration with the NLP layer
+	•	User interaction patterns
+	•	Session management within Streamlit
+Prompt 6: Logging Implementation
+Focus on the comprehensive logging approach:
+	•	Logging patterns for different components
+	•	Debug vs. audit logging strategies
+	•	Tools and libraries for effective logging
+	•	Example logging configurations
+Benefits of This Approach
+By breaking down the prompt as suggested:
+	1.	Each response can provide more detailed implementation guidance
+	2.	You’ll receive more thorough code examples for each component
+	3.	The AI can focus on specific technical challenges rather than trying to address everything at once
+	4.	You can process the prompts in an order that matches your development priorities
+	5.	You’ll get more comprehensive answers that don’t sacrifice detail due to length constraints
+This approach also allows you to iteratively refine your implementation plan as you receive responses to each prompt, potentially asking follow-up questions based on the information provided.

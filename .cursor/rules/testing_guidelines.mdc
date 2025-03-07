@@ -1,0 +1,109 @@
+---
+description: Testing Guidelines
+globs: src/tests/**/*.py,test_*.py
+---
+
+# Testing Guidelines
+# Guidelines for testing the YNAB integration application
+
+## Testing Priority
+testing_priority:
+  default_approach: "End-to-end natural language prompt testing with comprehensive logging"
+  escalation_policy: "Resort to unit testing only after three consecutive failed attempts with end-to-end testing"
+  rationale:
+    - "Natural language testing validates the entire system from user perspective"
+    - "End-to-end tests verify real-world workflows and edge cases"
+    - "Logs provide detailed diagnostics for identifying issues"
+    - "Unit tests should be used only when necessary to isolate complex issues"
+
+## End-to-End Natural Language Testing
+end_to_end_testing:
+  implementation:
+    - "Implement through CLI or application interfaces"
+    - "Test natural language queries and responses"
+    - "Verify correct data flow through all components"
+    - "Validate expected outputs and side effects"
+  
+  logging_requirements:
+    - "Log all prompts and responses at DEBUG level"
+    - "Include timestamps for performance analysis"
+    - "Log context data for transaction operations"
+    - "Track API request counts and response times"
+  
+  query_examples:
+    transaction_creation:
+      - "Create a transaction for $45.30 at Whole Foods yesterday"
+      - "Add a new purchase of $12.99 at Amazon for home supplies"
+      - "Record that I spent $8.50 on coffee this morning"
+    
+    spending_analysis:
+      - "How much did I spend at restaurants last month?"
+      - "What was my total grocery spending in April?"
+      - "Show me all transactions at Target over $50"
+    
+    budget_management:
+      - "How much is left in my grocery budget this month?"
+      - "Am I over budget in any categories?"
+      - "How does my current spending compare to last month?"
+    
+    account_management:
+      - "What's my current checking account balance?"
+      - "Show all transactions from my credit card this month"
+      - "Transfer $200 from savings to checking"
+  
+  verification_methods:
+    - "Compare actual vs. expected output for known queries"
+    - "Verify YNAB API calls match expected operations"
+    - "Check database state changes match expectations"
+    - "Validate AI tagging is applied correctly"
+
+## Performance Evaluation
+performance_evaluation:
+  metrics:
+    - "Response time for various query types"
+    - "Accuracy of AI categorization and extraction"
+    - "Error rate and recovery effectiveness"
+    - "YNAB API usage efficiency"
+  
+  prompt_testing:
+    - "Test system prompt variations for improved accuracy"
+    - "Evaluate prompt examples for coverage of edge cases"
+    - "Measure impact of prompt changes on accuracy"
+  
+  ai_model_testing:
+    - "Compare performance across different AI models"
+    - "Evaluate cost vs. performance tradeoffs"
+    - "Test fallback mechanisms between providers"
+    - "Measure impact of model selection on response quality"
+
+## Escalation to Unit Testing
+unit_testing_escalation:
+  when_to_use:
+    - "After three consecutive failures with end-to-end testing"
+    - "For complex logic with many edge cases"
+    - "When debugging data transformation failures"
+    - "For performance-critical code paths"
+  
+  implementation:
+    - "Focus on problematic components identified in end-to-end testing"
+    - "Create mock data that reproduces the issue"
+    - "Isolate components with dependency injection"
+    - "Implement explicit test case for each identified issue"
+  
+  pydantic_ai_testing:
+    - "Test AI input/output models in isolation"
+    - "Verify validation rules catch invalid inputs"
+    - "Test model conversion and transformation"
+    - "Mock AI responses for deterministic testing"
+
+## Testing Prohibited Practices
+testing_prohibited:
+  - "Never test against production YNAB budgets"
+  - "Never commit API keys in test files"
+  - "Never disable validation just to make tests pass"
+  - "Avoid brittle tests that depend on specific AI responses"
+  - "Don't create tests that modify real financial data"
+  - "Never bypass end-to-end testing without following the three-strike rule"
+  
+  reference:
+    security: "See security_requirements section of ynab_api_integration.mdc" 

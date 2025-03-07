@@ -1,0 +1,115 @@
+---
+description: API Model Compatibility Guidelines
+globs: src/core/models/*.py,src/core/api/*.py,src/cli/natural_language_cli.py
+---
+
+# API Model Compatibility Guidelines
+# Standards for ensuring compatibility between API clients and data models
+
+model_class_requirements:
+  from_api_methods:
+    principle: "All model classes must implement both from_api_response and from_api methods"
+    implementation:
+      - "Implement from_api_response as the primary method for creating instances from API data"
+      - "Implement from_api as an alias for from_api_response for backward compatibility"
+      - "Both methods should accept the same parameters and return the same type"
+    example: |
+      @classmethod
+      def from_api_response(cls, data: Dict[str, Any]) -> 'ModelClass':
+          """Create instance from YNAB API response"""
+          return cls(
+              id=data['id'],
+              name=data['name'],
+              # Other fields...
+          )
+      
+      @classmethod
+      def from_api(cls, data: Dict[str, Any]) -> 'ModelClass':
+          """Alias for from_api_response for compatibility"""
+          return cls.from_api_response(data)
+  
+  error_handling:
+    principle: "Model classes should handle missing or optional fields gracefully"
+    implementation:
+      - "Use data.get('field_name', default_value) instead of data['field_name']"
+      - "Provide sensible defaults for optional fields"
+      - "Use Optional typing for fields that might be None"
+    example: |
+      # Good - handles missing fields gracefully
+      name=data.get('name', '')
+      deleted=data.get('deleted', False)
+      
+      # Bad - will raise KeyError if field is missing
+      name=data['name']
+      deleted=data['deleted']
+
+api_client_requirements:
+  client_initialization:
+    principle: "API clients should be initialized with the YNABClient, not the RequestHandler"
+    implementation:
+      - "In container.py, initialize specialized API clients with ynab_client"
+      - "API clients should use the client's get, post, put, delete methods"
+    example: |
+      # Good - uses YNABClient
+      transactions_api = providers.Singleton(
+          TransactionsAPI,
+          client=ynab_client
+      )
+      
+      # Bad - uses RequestHandler directly
+      transactions_api = providers.Singleton(
+          TransactionsAPI,
+          client=request_handler
+      )
+  
+  model_instantiation:
+    principle: "API clients should use from_api method for model instantiation"
+    implementation:
+      - "Use Model.from_api(data) to create model instances from API responses"
+      - "This ensures compatibility with both old and new model implementations"
+    example: |
+      # In API client methods
+      response = self.client.get(endpoint, params=params)
+      data = response.get('data', {}).get('entity', {})
+      return Model.from_api(data)
+
+common_issues:
+  - issue: "'RequestHandler' object has no attribute 'get'"
+    cause: "API client initialized with RequestHandler instead of YNABClient"
+    solution: "Update container.py to initialize API clients with ynab_client"
+  
+  - issue: "AttributeError: 'module' object has no attribute 'from_api'"
+    cause: "Model class missing from_api method"
+    solution: "Add from_api method as an alias for from_api_response"
+  
+  - issue: "KeyError in model instantiation"
+    cause: "Model class not handling missing fields gracefully"
+    solution: "Use data.get('field', default) instead of data['field']"
+
+implementation_notes:
+  - "The YNABClient has get, post, put, delete methods that the specialized API clients expect"
+  - "The RequestHandler only has a make_request method, not the HTTP verb methods"
+  - "Model classes should handle both direct API responses and nested responses"
+  - "Always test natural language queries after making changes to API clients or models"
+
+reference:
+  files:
+    models:
+      - "src/core/models/transaction.py"
+      - "src/core/models/budget.py"
+      - "src/core/models/category.py"
+      - "src/core/models/account.py"
+      - "src/core/models/payee.py"
+    
+    api_clients:
+      - "src/core/api/transactions_api.py"
+      - "src/core/api/budgets_api.py"
+      - "src/core/api/categories_api.py"
+      - "src/core/api/accounts_api.py"
+      - "src/core/api/payees_api.py"
+    
+    container:
+      - "src/core/container.py"
+    
+    cli:
+      - "src/cli/natural_language_cli.py" 

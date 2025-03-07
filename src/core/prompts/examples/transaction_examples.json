@@ -1,0 +1,116 @@
+{
+  "version": "1.0",
+  "examples": [
+    {
+      "transaction": {
+        "id": "example-transaction-1",
+        "date": "2023-01-15",
+        "amount": -45.67,
+        "payee_name": "Whole Foods Market",
+        "memo": "Weekly groceries"
+      },
+      "category": {
+        "id": "category-groceries",
+        "name": "Groceries",
+        "group_name": "Food"
+      },
+      "explanation": "Transaction at Whole Foods with 'groceries' in the memo is clearly for Groceries category."
+    },
+    {
+      "transaction": {
+        "id": "example-transaction-2",
+        "date": "2023-01-18",
+        "amount": -32.50,
+        "payee_name": "Shell",
+        "memo": "Gas"
+      },
+      "category": {
+        "id": "category-fuel",
+        "name": "Fuel",
+        "group_name": "Transportation"
+      },
+      "explanation": "Transaction at Shell with 'Gas' in the memo indicates fuel purchase."
+    },
+    {
+      "transaction": {
+        "id": "example-transaction-3",
+        "date": "2023-01-20",
+        "amount": -12.99,
+        "payee_name": "Netflix",
+        "memo": "Monthly subscription"
+      },
+      "category": {
+        "id": "category-subscriptions",
+        "name": "Subscriptions",
+        "group_name": "Entertainment"
+      },
+      "explanation": "Netflix is a streaming service, categorized as a subscription under Entertainment."
+    },
+    {
+      "transaction": {
+        "id": "example-transaction-4",
+        "date": "2023-01-25",
+        "amount": -1500.00,
+        "payee_name": "Landlord",
+        "memo": "January Rent"
+      },
+      "category": {
+        "id": "category-rent",
+        "name": "Rent",
+        "group_name": "Housing"
+      },
+      "explanation": "Large transaction with 'Rent' in the memo clearly indicates housing expense."
+    },
+    {
+      "transaction": {
+        "id": "example-transaction-5",
+        "date": "2023-01-28",
+        "amount": -85.43,
+        "payee_name": "CVS Pharmacy",
+        "memo": "Prescription"
+      },
+      "category": {
+        "id": "category-healthcare",
+        "name": "Healthcare",
+        "group_name": "Health"
+      },
+      "explanation": "Transaction at pharmacy with 'Prescription' in memo indicates healthcare expense."
+    },
+    {
+      "transaction": {
+        "id": "example-transaction-6",
+        "date": "2023-01-15",
+        "amount": -45.67,
+        "payee_name": "Whole Foods Market",
+        "memo": "Weekly groceries"
+      },
+      "action": "created",
+      "tag": "[AI created 2023-01-15]",
+      "explanation": "New transaction created by AI gets the 'created' action type and current date."
+    },
+    {
+      "transaction": {
+        "id": "example-transaction-7",
+        "date": "2023-01-18",
+        "amount": -32.50,
+        "payee_name": "Shell",
+        "memo": "[AI created 2023-01-15] Gas"
+      },
+      "action": "modified",
+      "tag": "[AI modified 2023-01-18]",
+      "explanation": "Existing transaction with AI tag is being modified, so update tag with 'modified' action type."
+    },
+    {
+      "transaction": {
+        "id": "example-transaction-8",
+        "date": "2023-01-20",
+        "amount": -12.99,
+        "payee_name": "Netflix",
+        "memo": "[AI modified 2023-01-18] Monthly subscription"
+      },
+      "action": "categorized",
+      "tag": "[AI categorized 2023-01-20]",
+      "explanation": "Existing transaction with AI tag is being categorized, so update tag with 'categorized' action type."
+    }
+  ]
+}
