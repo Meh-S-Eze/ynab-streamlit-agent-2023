@@ -140,7 +140,7 @@ def build_query_params(params: Dict[str, Any]) -> Dict[str, str]:
 
 def validate_response(
     response: requests.Response, 
-    expected_status_codes: List[int] = [200]
+    expected_status_codes: List[int] = [200, 201, 204]
 ) -> Tuple[bool, Optional[Dict[str, Any]]]:
     """
     Validate response status code and extract error details if needed

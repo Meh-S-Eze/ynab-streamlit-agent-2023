@@ -108,9 +108,20 @@ class TransactionsAPI:
         # Validate budget ID
         self.client._validate_budget_id(budget_id)
         
-        data = {
-            'transaction': transaction.to_api_dict()
-        }
+        # Check if transaction has to_api_format or to_api_dict method
+        if hasattr(transaction, 'to_api_format'):
+            data = {
+                'transaction': transaction.to_api_format()
+            }
+        elif hasattr(transaction, 'to_api_dict'):
+            data = {
+                'transaction': transaction.to_api_dict()
+            }
+        else:
+            # Assume it's already a dict
+            data = {
+                'transaction': transaction
+            }
         
         response = self.client.post(f'budgets/{budget_id}/transactions', data=data)
         transaction_data = response.get('data', {}).get('transaction', {})

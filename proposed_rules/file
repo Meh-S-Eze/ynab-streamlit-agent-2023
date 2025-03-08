@@ -1,0 +1,90 @@
+https://api.ynab.com/
+
+
+https://github.com/Meh-S-Eze/ynab-streamlit-agent-2023/tree/master/backup
+
+Project Overview
+Create a focused Vue.js application that integrates with the YNAB (You Need A Budget) API. The app will have three primary functions:
+Allow users to set and update their YNAB API token
+Select which YNAB budget to work with
+Provide a natural language chatbot interface for interacting with YNAB data
+Reference Implementation
+Use the existing implementation as a reference:
+Core Architecture
+Follow a "Core-First" development approach with these key components:
+Core Layer (Most Important)
+API Client: YNAB API integration with proper authentication and error handling
+NLP Service: Process natural language queries for financial operations
+Token Management: Secure storage and management of the YNAB API token
+Budget Selection: Fetch and manage available budgets
+Interface Layer
+Simple Vue.js UI with three main views:
+API token configuration
+Budget selection
+Natural language chatbot interface
+Key Features to Implement
+API Token Management
+Input field for entering YNAB API token
+Secure storage of the token (localStorage with encryption or similar)
+Validation of token before saving
+Option to clear/reset token
+Budget Selection
+Fetch available budgets once token is configured
+Allow user to select which budget to work with
+Save budget selection preference
+Display current budget name in the interface
+Natural Language Chatbot
+Chat-like interface for entering natural language queries
+Support for transaction-related queries:
+Creating transactions (e.g., "I spent $45.99 at Amazon last week")
+Searching transactions (e.g., "Show my grocery spending last month")
+Getting budget information (e.g., "How much do I have left in my dining budget?")
+Display formatted responses from YNAB
+Show error messages for invalid queries or API issues
+API Integration
+Connect to YNAB API using the provided token
+YNAB API base URL: https://api.youneedabudget.com/v1
+Handle authentication errors gracefully
+Implement basic error handling and retries
+Process API responses into user-friendly formats
+Technical Requirements
+Frontend (Vue.js)
+Vue 3 with Composition API
+Simple, focused component architecture
+Responsive design for mobile and desktop
+Form validation for the API token
+Loading states during API calls
+Error handling with user-friendly messages
+Natural Language Processing
+Parse user queries to extract key information:
+Transaction amounts
+Payees/merchants
+Dates and time periods
+Categories
+Convert parsed information into appropriate YNAB API calls
+Format API responses into readable chat messages
+Data Security
+Don't send the API token to any third-party services
+Implement basic encryption for token storage
+Allow users to easily clear their token
+Implementation Notes
+Keep the UI minimal and focused on the three main functions
+Prioritize user experience in the chatbot interface
+Provide clear feedback for successful/failed operations
+Include helpful examples of queries users can try
+Implement proper error messages for common issues
+Ensure the selected budget is used for all API operations
+Vue-Specific Implementation Details
+Use Vue 3's Composition API for better code organization
+Create a simple three-view layout (token config, budget selection, and chat)
+Implement a chat-like component for the natural language interface
+Use Vue's transition system for smooth message animations
+Store API token and budget selection securely using Vue's reactivity system
+Design Guidelines
+Clean, minimalist interface
+Conversational UI for the chatbot
+Clear distinction between user queries and system responses
+Intuitive token configuration and budget selection screens
+Mobile-friendly design
+Display current budget name prominently in the chat interface
+This focused application provides a simple way for users to interact with their YNAB data using natural language, with minimal setup requiring only their API token and budget selection.

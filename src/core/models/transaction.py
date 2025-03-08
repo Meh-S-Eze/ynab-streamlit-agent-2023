@@ -237,7 +237,7 @@ class TransactionAmount(BaseModel):
             context = (info.context or {}).copy()
             
             # Get conversion rates from config (will be moved to config module)
-            from core.config import ConfigManager
+            from src.core.config import ConfigManager
             context["conversion_rates"] = ConfigManager().get_conversion_rates()
 
             # Instantiate a new AmountNormalizer and use it
@@ -294,7 +294,7 @@ class AmountFromAI(TransactionAmount):
             context["source"] = "gemini_ai"
             
             # Get conversion rates from config (will be moved to config module)
-            from core.config import ConfigManager
+            from src.core.config import ConfigManager
             context["conversion_rates"] = ConfigManager().get_conversion_rates()
             
             # Use normalizer with AI context

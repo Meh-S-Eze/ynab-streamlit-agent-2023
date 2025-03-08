@@ -38,7 +38,10 @@ from .services import (
     BudgetService,
     AITaggingService,
     NLPService,
-    TransactionTaggingService
+    TransactionTaggingService,
+    TransactionCreationService,
+    TransactionQueryService,
+    TransactionCleanupService
 )
 
 # Import prompt classes
@@ -176,10 +179,39 @@ class Container(containers.DeclarativeContainer):
     )
     
     # NLP service for natural language processing
-    nlp_service = providers.Singleton(
-        NLPService,
+    def nlp_service(self) -> NLPService:
+        """
+        Get the NLP service.
+
+        Returns:
+            NLPService: The NLP service
+        """
+        if not hasattr(self, "_nlp_service"):
+            self._nlp_service = NLPService(
+                transaction_service=self.transaction_service(),
+                category_service=self.category_service(),
+                transaction_creation_service=self.transaction_creation_service(),
+                transaction_query_service=self.transaction_query_service(),
+                transaction_cleanup_service=self.transaction_cleanup_service()
+            )
+        return self._nlp_service
+    
+    # Specialized NLP services
+    transaction_creation_service = providers.Singleton(
+        TransactionCreationService,
         transaction_service=transaction_service,
         category_service=category_service
+    )
+    
+    transaction_query_service = providers.Singleton(
+        TransactionQueryService,
+        transaction_service=transaction_service,
+        category_service=category_service
+    )
+    
+    transaction_cleanup_service = providers.Singleton(
+        TransactionCleanupService,
+        transaction_service=transaction_service
     )
     
     budget_service = providers.Singleton(
@@ -226,9 +258,36 @@ class Container(containers.DeclarativeContainer):
         return cls.transaction_tagging_service()
     
     @classmethod
-    def get_nlp_service(cls):
-        """Get the NLP service instance"""
-        return cls.nlp_service()
+    def get_nlp_service(cls) -> NLPService:
+        """
+        Get the NLP service.
+
+        Returns:
+            NLPService: The NLP service
+        """
+        container = cls()
+        return NLPService(
+            transaction_service=container.transaction_service(),
+            category_service=container.category_service(),
+            transaction_creation_service=container.transaction_creation_service(),
+            transaction_query_service=container.transaction_query_service(),
+            transaction_cleanup_service=container.transaction_cleanup_service()
+        )
+    
+    @classmethod
+    def get_transaction_creation_service(cls):
+        """Get the TransactionCreationService singleton instance."""
+        return cls.transaction_creation_service()
+    
+    @classmethod
+    def get_transaction_query_service(cls):
+        """Get the TransactionQueryService singleton instance."""
+        return cls.transaction_query_service()
+    
+    @classmethod
+    def get_transaction_cleanup_service(cls):
+        """Get the TransactionCleanupService singleton instance."""
+        return cls.transaction_cleanup_service()
     
     @classmethod
     def wire_all_services(cls):
@@ -245,4 +304,7 @@ class Container(containers.DeclarativeContainer):
         cls.get_ai_tagging_service()
         cls.get_transaction_tagging_service()
         cls.get_nlp_service()
+        cls.get_transaction_creation_service()
+        cls.get_transaction_query_service()
+        cls.get_transaction_cleanup_service()
         return True 

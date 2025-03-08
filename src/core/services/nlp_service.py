@@ -12,70 +12,288 @@ from datetime import date, datetime, timedelta
 from ..models.transaction import Transaction
 from ..services.transaction_service import TransactionService
 from ..services.category_service import CategoryService
+from ..services.transaction_creation_service import TransactionCreationService
+from ..services.transaction_query_service import TransactionQueryService
+from ..services.transaction_cleanup_service import TransactionCleanupService
 
 logger = logging.getLogger(__name__)
 
 class NLPService:
     """
-    Service for processing natural language queries about financial data.
-    
-    This service interprets natural language queries and returns relevant data
-    from the YNAB API based on the query intent and parameters.
+    Service for processing natural language queries related to financial data.
+    This service delegates to specialized services based on the query intent.
     """
-    
-    def __init__(self,
-                transaction_service: TransactionService,
-                category_service: CategoryService):
+
+    def __init__(
+        self, 
+        transaction_service: TransactionService, 
+        category_service: CategoryService,
+        transaction_creation_service: TransactionCreationService,
+        transaction_query_service: TransactionQueryService,
+        transaction_cleanup_service: TransactionCleanupService
+    ):
         """
-        Initialize the NLP service.
-        
+        Initialize the NLPService.
+
         Args:
             transaction_service: Service for transaction operations
             category_service: Service for category operations
+            transaction_creation_service: Service for transaction creation
+            transaction_query_service: Service for transaction queries
+            transaction_cleanup_service: Service for transaction cleanup
         """
         self.transaction_service = transaction_service
         self.category_service = category_service
+        self.transaction_creation_service = transaction_creation_service
+        self.transaction_query_service = transaction_query_service
+        self.transaction_cleanup_service = transaction_cleanup_service
     
-    def process_query(self, query: str, budget_id: str) -> Dict[str, Any]:
+    def process_query(self, query: str, budget_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Process a natural language query about financial data.
-        
+        Process a natural language query.
+
         Args:
-            query: Natural language query string
-            budget_id: Budget ID to search within
-            
+            query: The natural language query
+            budget_id: The budget ID (optional)
+
         Returns:
-            Dict[str, Any]: Results of the query processing
+            A dictionary with the query results
         """
         try:
-            # For now, implement a simple keyword-based approach
             query_lower = query.lower()
+            
+            # Check for transaction creation
+            if any(keyword in query_lower for keyword in ["create", "add", "new", "record"]) and any(keyword in query_lower for keyword in ["transaction", "expense", "purchase", "spending", "payment"]):
+                return self.transaction_creation_service.process_transaction_creation(query, budget_id)
+            
+            # Check for transaction cleanup
+            if any(keyword in query_lower for keyword in ["clean", "fix", "update", "correct"]) and any(keyword in query_lower for keyword in ["transaction", "payee", "memo"]):
+                return self.transaction_cleanup_service.process_transaction_cleanup(query, budget_id)
             
             # Check for grocery-related queries
             if "grocery" in query_lower or "groceries" in query_lower:
-                return self._process_grocery_query(query_lower, budget_id)
+                return self.transaction_query_service.process_grocery_query(budget_id, query)
             
             # Check for spending-related queries
-            elif "spending" in query_lower or "spent" in query_lower:
-                return self._process_spending_query(query_lower, budget_id)
+            if any(keyword in query_lower for keyword in ["spend", "spent", "spending", "cost", "expense"]):
+                return self.transaction_query_service.process_spending_query(budget_id, query)
             
             # Check for category-related queries
-            elif "categor" in query_lower:
-                return self._process_category_query(query_lower, budget_id)
+            if "category" in query_lower:
+                return self.transaction_query_service.process_category_query(budget_id, query)
             
             # Check for time-based queries
-            elif any(term in query_lower for term in ["last month", "this month", "last week", "this week"]):
-                return self._process_time_based_query(query_lower, budget_id)
+            if any(period in query_lower for period in ["today", "yesterday", "week", "month", "year", "since"]):
+                return self.transaction_query_service.process_time_query(budget_id, query)
             
-            # Default to a general transaction search
-            else:
-                return self._process_general_query(query_lower, budget_id)
-                
+            # Default to spending query
+            return self.transaction_query_service.process_spending_query(budget_id, query)
+            
         except Exception as e:
-            logger.error(f"Error processing natural language query: {e}")
+            logger.error(f"Error processing query: {e}")
+            return {
+                "error": f"Error processing query: {e}",
+                "transactions": [],
+                "summary": "Error processing query"
+            }
+    
+    def _process_transaction_creation(self, query: str, budget_id: str) -> Dict[str, Any]:
+        """Process transaction creation queries"""
+        from datetime import datetime, timedelta
+        from decimal import Decimal
+        import re
+        from ..models.transaction import TransactionCreate, TransactionAmount
+        
+        try:
+            # Extract amount - improved regex to capture dollar sign and full amount
+            amount_match = re.search(r'\$\s*(\d+(?:\.\d+)?)', query)
+            if not amount_match:
+                return {"error": True, "summary": "Could not find a valid amount in your query. Please include a dollar amount like $10.50."}
+            
+            amount_str = amount_match.group(1)
+            amount = Decimal(amount_str)
+            
+            # Extract payee directly with a more specific pattern
+            payee_match = re.search(r'(?:at|from|to) ([A-Za-z0-9\s&\']+?)(?:\s+(?:for|in)\s+|\s+yesterday|\s+today|\s+tomorrow|\s+last week|$)', query)
+            if not payee_match:
+                return {"error": True, "summary": "Could not find a valid payee in your query. Please include 'at', 'from', or 'to' followed by the payee name."}
+            
+            payee_name = payee_match.group(1).strip()
+            
+            # Capitalize the first letter of each word in the payee name
+            payee_name = ' '.join(word.capitalize() for word in payee_name.split())
+            
+            # Extract category information
+            category_id = None
+            category_name = None
+            
+            # Look for "for [category]" or "in [category]" patterns
+            category_match = re.search(r'(?:for|in) ([A-Za-z0-9\s&]+)(?:category)?', query.lower())
+            if category_match:
+                potential_category = category_match.group(1).strip()
+                
+                # Try to match to an existing category
+                category_match_result = self.category_service.find_best_category_match(budget_id, potential_category)
+                
+                if category_match_result.category:
+                    category_id = category_match_result.category.id
+                    category_name = category_match_result.category.name
+                    logger.debug(f"Matched category: {category_name} (confidence: {category_match_result.confidence})")
+            
+            # Determine date
+            date_obj = datetime.now().date()
+            if "yesterday" in query.lower():
+                date_obj = date_obj - timedelta(days=1)
+            elif "tomorrow" in query.lower():
+                date_obj = date_obj + timedelta(days=1)
+            elif "last week" in query.lower():
+                date_obj = date_obj - timedelta(days=7)
+            
+            # Get the first account
+            accounts = self.transaction_service.transactions_api.client.accounts_api.get_accounts(budget_id)
+            if not accounts:
+                return {"error": True, "summary": "No accounts found in your budget"}
+            
+            account_id = accounts[0].id
+            
+            # Create transaction
+            transaction_amount = TransactionAmount(amount=amount, is_outflow=True)
+            
+            # Format memo with AI-YY/MM/DD Created pattern
+            current_date = datetime.now().strftime("%y/%m/%d")
+            memo = f"AI-{current_date} Created"
+            
+            transaction = TransactionCreate(
+                account_id=account_id,
+                date=date_obj,
+                amount=transaction_amount,
+                payee_name=payee_name,
+                category_id=category_id,
+                memo=memo,
+                cleared="uncleared",
+                approved=False
+            )
+            
+            # Create the transaction
+            created_transaction = self.transaction_service.transactions_api.create_transaction(
+                budget_id, transaction
+            )
+            
+            # Include category in the success message if found
+            category_info = f" in {category_name}" if category_name else ""
+            
+            return {
+                "status": "success",
+                "summary": f"Transaction created: ${amount} at {payee_name}{category_info} on {date_obj.strftime('%Y-%m-%d')}",
+                "transaction": created_transaction
+            }
+            
+        except Exception as e:
+            logger.error(f"Error creating transaction: {e}")
             return {
                 "error": True,
-                "summary": f"An error occurred while processing your query: {str(e)}"
+                "summary": f"Error creating transaction: {str(e)}"
+            }
+    
+    def _process_transaction_cleanup(self, query: str, budget_id: str) -> Dict[str, Any]:
+        """Process transaction cleanup queries to fix payee names and memo fields"""
+        from datetime import datetime, timedelta
+        import re
+        
+        try:
+            # Extract date range for transactions to clean up
+            start_date = None
+            end_date = datetime.now().date()
+            
+            # Look for date range in query
+            date_match = re.search(r'since ([A-Za-z]+ \d+,? \d{4})', query.lower())
+            if date_match:
+                date_str = date_match.group(1)
+                try:
+                    start_date = datetime.strptime(date_str, "%B %d, %Y").date()
+                except ValueError:
+                    try:
+                        start_date = datetime.strptime(date_str, "%B %d %Y").date()
+                    except ValueError:
+                        logger.warning(f"Could not parse date: {date_str}")
+            
+            # If no specific date found, default to 30 days ago
+            if not start_date:
+                start_date = end_date - timedelta(days=30)
+                
+            # Get transactions in the date range
+            transactions = self.transaction_service.get_transactions(
+                budget_id, 
+                since_date=start_date
+            )
+            
+            # Filter for transactions that need cleanup
+            transactions_to_fix = []
+            
+            for transaction in transactions:
+                needs_fixing = False
+                
+                # Check for date terms in payee name
+                payee_name = transaction.payee_name or ""
+                if any(term in payee_name.lower() for term in ["yesterday", "today", "tomorrow", "last week"]):
+                    needs_fixing = True
+                
+                # Check for old memo format
+                memo = transaction.memo or ""
+                if "natural language" in memo.lower() or "created via" in memo.lower():
+                    needs_fixing = True
+                
+                if needs_fixing:
+                    transactions_to_fix.append(transaction)
+            
+            # Fix the transactions
+            fixed_count = 0
+            for transaction in transactions_to_fix:
+                try:
+                    # Fix payee name
+                    payee_name = transaction.payee_name or ""
+                    original_payee = payee_name
+                    
+                    # Remove date terms
+                    for term in ["yesterday", "today", "tomorrow", "last week"]:
+                        if term in payee_name.lower():
+                            payee_name = re.sub(r'\s*' + term + r'\s*', ' ', payee_name, flags=re.IGNORECASE).strip()
+                    
+                    # Fix memo
+                    current_date = datetime.now().strftime("%y/%m/%d")
+                    memo = f"AI-{current_date} Updated"
+                    
+                    # Only update if changes were made
+                    if payee_name != original_payee or "natural language" in (transaction.memo or "").lower():
+                        # Create update model
+                        update = {
+                            "payee_name": payee_name,
+                            "memo": memo
+                        }
+                        
+                        # Update the transaction
+                        self.transaction_service.transactions_api.update_transaction(
+                            budget_id, 
+                            transaction.id, 
+                            update
+                        )
+                        
+                        fixed_count += 1
+                except Exception as e:
+                    logger.error(f"Error fixing transaction {transaction.id}: {e}")
+            
+            return {
+                "status": "success",
+                "summary": f"Cleaned up {fixed_count} transactions from {start_date} to {end_date}",
+                "transactions_fixed": fixed_count,
+                "total_transactions": len(transactions_to_fix)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up transactions: {e}")
+            return {
+                "error": True,
+                "summary": f"Error cleaning up transactions: {str(e)}"
             }
     
     def _process_grocery_query(self, query: str, budget_id: str) -> Dict[str, Any]:

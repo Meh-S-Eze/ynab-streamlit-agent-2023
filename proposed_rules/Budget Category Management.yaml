@@ -1,0 +1,651 @@
+title: "Budget Category Management"
+description: "Guidelines for creating and managing subcategories in YNAB via API"
+version: "1.0.0"
+author: "YNAB API Team"
+
+overview: |
+  This document outlines how to break down general categories like "Groceries" 
+  into more specific subcategories like "Food," "Hygiene," and "Dog Food" 
+  using the YNAB API with Pydantic for data validation.
+
+category_management:
+  creating_subcategories:
+    description: |
+      The YNAB API allows you to work with categories through several endpoints.
+      First identify your category group, then create new subcategories within that group.
+      Using Pydantic models ensures data validation and type safety.
+    
+    steps:
+      - name: "Define Pydantic Models"
+        description: "Create Pydantic models for YNAB data structures"
+        correct_example: |
+          ```python
+          # Correct: Define Pydantic models for type safety and validation
+          from pydantic import BaseModel, Field, validator
+          from typing import List, Optional, Dict, Any
+          from datetime import datetime
+          
+          class CategoryModel(BaseModel):
+              id: str
+              name: str
+              budgeted: int = Field(..., description="Amount in milliunits")
+              activity: Optional[int] = Field(0, description="Activity amount in milliunits")
+              balance: Optional[int] = Field(0, description="Balance in milliunits")
+              
+              @validator('budgeted', 'activity', 'balance')
+              def validate_amounts(cls, v):
+                  if v is not None and not isinstance(v, int):
+                      raise ValueError('Amount must be an integer in milliunits')
+                  return v
+          
+          class CategoryGroupModel(BaseModel):
+              id: str
+              name: str
+              categories: List[CategoryModel]
+          
+          class CategoriesResponse(BaseModel):
+              category_groups: List[CategoryGroupModel]
+          ```
+        incorrect_example: |
+          ```python
+          # Incorrect: Using dictionaries without validation
+          # This approach lacks type safety and validation
+          def process_categories(categories_data):
+              for group in categories_data.get('category_groups', []):
+                  for category in group.get('categories', []):
+                      # No validation that required fields exist
+                      # No type checking for budgeted amount
+                      print(f"Category: {category.get('name')}, Budget: {category.get('budgeted')}")
+          ```
+
+      - name: "Get Current Categories"
+        endpoint: "GET /budgets/{budget_id}/categories"
+        description: "Retrieve your current category structure"
+        correct_example: |
+          ```python
+          # Correct: Get categories with Pydantic validation
+          from pydantic import ValidationError
+          
+          try:
+              response = ynab_api.get_categories(budget_id)
+              
+              # Parse and validate with Pydantic
+              try:
+                  categories = CategoriesResponse(**response)
+                  # Now we have a fully validated object with type hints
+                  for group in categories.category_groups:
+                      print(f"Group: {group.name}")
+              except ValidationError as ve:
+                  logger.error(f"Invalid data structure: {ve}")
+                  # Handle validation errors appropriately
+                  
+          except Exception as e:
+              logger.error(f"Error retrieving categories: {e}")
+              # Implement retry logic or fallback
+          ```
+        incorrect_example: |
+          ```python
+          # Incorrect: No validation of response structure
+          categories = ynab_api.get_categories(budget_id)
+          # This assumes the response has the expected structure
+          # No error handling for missing or malformed data
+          ```
+
+      - name: "Identify Category Group"
+        description: "Find the category group containing the category you want to split"
+        correct_example: |
+          ```python
+          # Correct: Use Pydantic models for type-safe access
+          def find_category(categories: CategoriesResponse, category_name: str) -> tuple[Optional[CategoryModel], Optional[str]]:
+              """Find a category and its group ID by name"""
+              for group in categories.category_groups:
+                  for category in group.categories:
+                      if category.name == category_name:
+                          return category, group.id
+                  
+              return None, None
+          
+          # Usage
+          grocery_category, category_group_id = find_category(categories, "Groceries")
+          if not grocery_category:
+              logger.error("Groceries category not found")
+          ```
+        incorrect_example: |
+          ```python
+          # Incorrect: Inefficient nested loops without type safety
+          grocery_category = None
+          category_group_id = None
+          
+          # No type hints, potential for KeyError if structure is unexpected
+          for group in categories['category_groups']:
+              for category in group['categories']:
+                  if category['name'] == 'Groceries':
+                      grocery_category = category
+                      category_group_id = group['id']
+          ```
+
+      - name: "Create New Subcategories"
+        endpoint: "PATCH /budgets/{budget_id}/categories/{category_group_id}"
+        description: "Add new subcategories to the same category group"
+        correct_example: |
+          ```python
+          # Correct: Use Pydantic models for new subcategories
+          from pydantic import BaseModel
+          
+          class SubcategoryCreate(BaseModel):
+              name: str
+              budgeted: int
+              
+              class Config:
+                  schema_extra = {
+                      "example": {
+                          "name": "Food",
+                          "budgeted": 50000  # $50.00 in milliunits
+                      }
+                  }
+          
+          # Create validated subcategory models
+          new_subcategories = [
+              SubcategoryCreate(
+                  name="Food", 
+                  budgeted=int(grocery_category.budgeted * 0.7)  # 70% of grocery budget
+              ),
+              SubcategoryCreate(
+                  name="Hygiene", 
+                  budgeted=int(grocery_category.budgeted * 0.2)  # 20% of grocery budget
+              ),
+              SubcategoryCreate(
+                  name="Dog Food", 
+                  budgeted=int(grocery_category.budgeted * 0.1)  # 10% of grocery budget
+              )
+          ]
+          
+          # Update the category group with new subcategories
+          for subcategory in new_subcategories:
+              try:
+                  # Convert Pydantic model to dict for API
+                  subcategory_dict = subcategory.dict()
+                  response = ynab_api.create_category(budget_id, category_group_id, subcategory_dict)
+                  logger.info(f"Created subcategory: {subcategory.name}")
+              except Exception as e:
+                  logger.error(f"Error creating subcategory {subcategory.name}: {e}")
+          ```
+        incorrect_example: |
+          ```python
+          # Incorrect: No validation for subcategory data
+          new_subcategories = [
+              {"name": "Food", "budgeted": grocery_category['budgeted'] * 0.7},  # Not validating data types
+              {"name": "Hygiene", "budgeted": grocery_category['budgeted'] * 0.2},
+              {"name": "Dog Food", "budgeted": grocery_category['budgeted'] * 0.1}
+          ]
+          
+          # No validation before sending to API
+          for subcategory in new_subcategories:
+              ynab_api.create_category(budget_id, category_group_id, subcategory)
+          ```
+
+  transaction_management:
+    description: |
+      After creating subcategories, you'll need to handle existing and future transactions.
+      Pydantic helps ensure transaction data is valid before processing.
+    
+    options:
+      - name: "Define Transaction Models"
+        description: "Create Pydantic models for transaction data"
+        example: |
+          ```python
+          from pydantic import BaseModel, Field, validator
+          from typing import Optional, List
+          from datetime import date
+          
+          class TransactionAmount(BaseModel):
+              amount: int = Field(..., description="Transaction amount in milliunits")
+              is_outflow: bool = True
+              
+          class TransactionUpdate(BaseModel):
+              category_id: str
+              
+              class Config:
+                  schema_extra = {
+                      "example": {
+                          "category_id": "a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6"
+                      }
+                  }
+          
+          class Transaction(BaseModel):
+              id: str
+              date: date
+              amount: int
+              memo: Optional[str] = None
+              payee_name: Optional[str] = None
+              category_id: Optional[str] = None
+              
+              @validator('amount')
+              def validate_amount(cls, v):
+                  return v  # Amount is stored in milliunits (negative for outflows)
+          
+          class TransactionResponse(BaseModel):
+              transactions: List[Transaction]
+          ```
+      
+      - name: "Recategorize Transactions"
+        endpoint: "PATCH /budgets/{budget_id}/transactions/{transaction_id}"
+        description: "Update existing transactions to use the new subcategories"
+        correct_example: |
+          ```python
+          # Correct: Use Pydantic models for transaction processing
+          from datetime import datetime, timedelta
+          import time
+          
+          try:
+              # Get transactions for specific category and date range
+              since_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+              response = ynab_api.get_transactions(
+                  budget_id, 
+                  category_id=grocery_category.id,
+                  since_date=since_date
+              )
+              
+              # Parse and validate with Pydantic
+              transactions = TransactionResponse(**response)
+              
+              # Process in batches to avoid rate limits
+              batch_size = 10
+              for i in range(0, len(transactions.transactions), batch_size):
+                  batch = transactions.transactions[i:i+batch_size]
+                  for transaction in batch:
+                      # Logic to determine which subcategory to use
+                      new_category_id = food_category_id  # Default
+                      
+                      if transaction.memo and "pet" in transaction.memo.lower():
+                          new_category_id = dog_food_category_id
+                      elif transaction.memo and any(item in transaction.memo.lower() for item in ["soap", "shampoo"]):
+                          new_category_id = hygiene_category_id
+                      
+                      # Create validated update model
+                      update = TransactionUpdate(category_id=new_category_id)
+                      
+                      # Update transaction
+                      ynab_api.update_transaction(
+                          budget_id,
+                          transaction.id,
+                          update.dict()
+                      )
+                  
+                  # Avoid rate limiting
+                  time.sleep(1)
+                  
+          except Exception as e:
+              logger.error(f"Error processing transactions: {e}")
+          ```
+        incorrect_example: |
+          ```python
+          # Incorrect: No data validation for transactions
+          grocery_transactions = ynab_api.get_transactions(
+              budget_id, 
+              category_id=grocery_category['id']
+          )
+          
+          # No validation of transaction data structure
+          # No batching for API rate limits
+          for transaction in grocery_transactions:
+              # Direct dictionary access without validation
+              memo = transaction.get('memo', '').lower()
+              
+              if "pet" in memo:
+                  new_category_id = dog_food_category_id
+              elif "soap" in memo:
+                  new_category_id = hygiene_category_id
+              else:
+                  new_category_id = food_category_id
+                  
+              # No validation of update data
+              ynab_api.update_transaction(
+                  budget_id,
+                  transaction['id'],
+                  {"category_id": new_category_id}
+              )
+          ```
+
+  automation:
+    description: |
+      Build systems to automate categorization of future transactions.
+      Pydantic helps with data validation and machine learning feature extraction.
+    
+    features:
+      - name: "Transaction Analysis with Pydantic"
+        description: "Use Pydantic for transaction data validation and feature extraction"
+        example: |
+          ```python
+          from pydantic import BaseModel, Field
+          from typing import List, Optional
+          
+          class TransactionFeatures(BaseModel):
+              description: str
+              amount: float
+              keywords: List[str] = Field(default_factory=list)
+              
+              def extract_keywords(self):
+                  """Extract keywords from transaction description"""
+                  self.keywords = [word.lower() for word in self.description.split() 
+                                  if len(word) > 3]
+                  return self
+          
+          def suggest_subcategory(transaction_data: dict) -> str:
+              """Suggest subcategory based on transaction data"""
+              # Create validated model with features
+              features = TransactionFeatures(
+                  description=transaction_data.get('payee_name', ''),
+                  amount=transaction_data.get('amount', 0) / 1000  # Convert milliunits to dollars
+              ).extract_keywords()
+              
+              # Keywords for different subcategories
+              food_keywords = ["grocery", "supermarket", "food", "produce", "meat", "dairy"]
+              hygiene_keywords = ["soap", "shampoo", "toothpaste", "deodorant", "toilet"]
+              pet_keywords = ["pet", "dog", "cat", "kibble", "treats"]
+              
+              # Check for keyword matches
+              for keyword in features.keywords:
+                  if keyword in pet_keywords:
+                      return "Dog Food"
+                  if keyword in hygiene_keywords:
+                      return "Hygiene"
+              
+              # Default to Food if no other matches
+              return "Food"
+          ```
+
+      - name: "Machine Learning with Pydantic"
+        description: "Use Pydantic for ML training data validation and feature extraction"
+        example: |
+          ```python
+          from pydantic import BaseModel, Field, validator
+          from typing import List, Optional, Literal
+          import pandas as pd
+          from sklearn.feature_extraction.text import TfidfVectorizer
+          from sklearn.ensemble import RandomForestClassifier
+          
+          class TrainingExample(BaseModel):
+              description: str
+              amount: float
+              category: Literal["Food", "Hygiene", "Dog Food"]
+              
+              @validator('amount')
+              def validate_amount(cls, v):
+                  if v <= 0:
+                      raise ValueError("Amount must be positive")
+                  return v
+          
+          class TrainingData(BaseModel):
+              examples: List[TrainingExample]
+              
+              def to_dataframe(self) -> pd.DataFrame:
+                  """Convert training data to pandas DataFrame"""
+                  return pd.DataFrame([example.dict() for example in self.examples])
+          
+          # Example usage
+          training_data = TrainingData(examples=[
+              TrainingExample(description="WALMART", amount=150.00, category="Food"),
+              TrainingExample(description="WALMART PHARMACY", amount=12.99, category="Hygiene"),
+              TrainingExample(description="PETCO", amount=45.50, category="Dog Food"),
+              TrainingExample(description="TARGET", amount=65.75, category="Food"),
+              TrainingExample(description="CVS", amount=8.99, category="Hygiene")
+          ])
+          
+          # Convert to DataFrame for ML
+          df = training_data.to_dataframe()
+          
+          # Train a simple classifier
+          vectorizer = TfidfVectorizer(stop_words='english')
+          X = vectorizer.fit_transform(df['description'])
+          y = df['category']
+          
+          model = RandomForestClassifier()
+          model.fit(X, y)
+          
+          # Prediction function
+          def predict_category(description: str, amount: float) -> str:
+              """Predict category using trained model"""
+              # Validate input with Pydantic
+              example = TrainingExample(description=description, amount=amount, category="Food")
+              
+              # Transform and predict
+              X_new = vectorizer.transform([example.description])
+              prediction = model.predict(X_new)[0]
+              
+              return prediction
+          ```
+
+  api_limitations:
+    description: |
+      Strategies for working around API limitations with Pydantic.
+    
+    workarounds:
+      - name: "Batch Processing with Pydantic"
+        description: "Process transactions in smaller batches with validated models"
+        example: |
+          ```python
+          from pydantic import BaseModel, Field
+          from typing import List, Generic, TypeVar, Optional
+          
+          T = TypeVar('T', bound=BaseModel)
+          
+          class BatchProcessor(Generic[T]):
+              """Generic batch processor for API operations"""
+              
+              def __init__(self, batch_size: int = 10, delay_seconds: float = 1.0):
+                  self.batch_size = batch_size
+                  self.delay_seconds = delay_seconds
+              
+              def process(self, items: List[T], process_func):
+                  """Process items in batches"""
+                  results = []
+                  
+                  for i in range(0, len(items), self.batch_size):
+                      batch = items[i:i+self.batch_size]
+                      
+                      # Process batch
+                      batch_results = [process_func(item) for item in batch]
+                      results.extend(batch_results)
+                      
+                      # Avoid rate limiting
+                      if i + self.batch_size < len(items):
+                          time.sleep(self.delay_seconds)
+                  
+                  return results
+          
+          # Example usage with transaction updates
+          processor = BatchProcessor[TransactionUpdate](batch_size=10, delay_seconds=1)
+          
+          def update_transaction_category(update: TransactionUpdate, transaction_id: str):
+              return ynab_api.update_transaction(budget_id, transaction_id, update.dict())
+          
+          # Process updates in batches
+          updates = [TransactionUpdate(category_id=food_category_id) for _ in range(50)]
+          transaction_ids = [t.id for t in transactions.transactions[:50]]
+          
+          results = processor.process(
+              updates,
+              lambda update, idx=idx: update_transaction_category(update, transaction_ids[idx])
+          )
+          ```
+      
+      - name: "Local Caching with Pydantic"
+        description: "Store category IDs locally with validated models"
+        example: |
+          ```python
+          from pydantic import BaseModel
+          from typing import Dict, Optional
+          import json
+          import os
+          from datetime import datetime, timedelta
+          
+          class CacheEntry(BaseModel):
+              value: str
+              expires_at: datetime
+              
+              def is_expired(self) -> bool:
+                  return datetime.now() > self.expires_at
+          
+          class CategoryCache(BaseModel):
+              entries: Dict[str, CacheEntry] = {}
+              cache_file: str = "category_cache.json"
+              
+              def get(self, key: str) -> Optional[str]:
+                  """Get value from cache if not expired"""
+                  if key in self.entries and not self.entries[key].is_expired():
+                      return self.entries[key].value
+                  return None
+              
+              def set(self, key: str, value: str, ttl_seconds: int = 86400):
+                  """Set value in cache with expiration"""
+                  self.entries[key] = CacheEntry(
+                      value=value,
+                      expires_at=datetime.now() + timedelta(seconds=ttl_seconds)
+                  )
+                  self.save()
+              
+              def save(self):
+                  """Save cache to file"""
+                  # Convert to dict with ISO format dates
+                  data = {
+                      key: {
+                          "value": entry.value,
+                          "expires_at": entry.expires_at.isoformat()
+                      }
+                      for key, entry in self.entries.items()
+                  }
+                  
+                  with open(self.cache_file, 'w') as f:
+                      json.dump(data, f)
+              
+              def load(self):
+                  """Load cache from file"""
+                  if not os.path.exists(self.cache_file):
+                      return
+                      
+                  with open(self.cache_file, 'r') as f:
+                      data = json.load(f)
+                      
+                  # Convert back to CacheEntry objects
+                  self.entries = {
+                      key: CacheEntry(
+                          value=item["value"],
+                          expires_at=datetime.fromisoformat(item["expires_at"])
+                      )
+                      for key, item in data.items()
+                  }
+          
+          # Example usage
+          cache = CategoryCache()
+          cache.load()
+          
+          def get_category_id(budget_id: str, category_name: str) -> Optional[str]:
+              """Get category ID with caching"""
+              cache_key = f"{budget_id}:{category_name}"
+              
+              # Check cache first
+              cached_id = cache.get(cache_key)
+              if cached_id:
+                  return cached_id
+              
+              # If not in cache, fetch from API
+              try:
+                  response = ynab_api.get_categories(budget_id)
+                  categories = CategoriesResponse(**response)
+                  
+                  for group in categories.category_groups:
+                      for category in group.categories:
+                          if category.name == category_name:
+                              # Store in cache for future use (24 hour TTL)
+                              cache.set(cache_key, category.id, 86400)
+                              return category.id
+              except Exception as e:
+                  logger.error(f"Error fetching category: {e}")
+              
+              return None
+          ```
+      
+      - name: "Hybrid Approach with Pydantic"
+        description: "Create categories via API but handle transaction recategorization through CSV export"
+        example: |
+          ```python
+          from pydantic import BaseModel, Field
+          from typing import List, Optional
+          import csv
+          from datetime import datetime
+          
+          class TransactionExport(BaseModel):
+              id: str
+              date: str
+              payee_name: Optional[str] = None
+              amount: float = Field(..., description="Amount in dollars")
+              current_category: str
+              suggested_category: str
+          
+          class ExportGenerator(BaseModel):
+              transactions: List[TransactionExport]
+              filename: str = Field(default_factory=lambda: f"recategorize_{datetime.now().strftime('%Y%m%d')}.csv")
+              
+              def generate_csv(self):
+                  """Generate CSV file for manual recategorization"""
+                  with open(self.filename, 'w', newline='') as csvfile:
+                      writer = csv.writer(csvfile)
+                      writer.writerow(['Transaction ID', 'Date', 'Payee', 'Amount', 'Current Category', 'Suggested Category'])
+                      
+                      for transaction in self.transactions:
+                          writer.writerow([
+                              transaction.id,
+                              transaction.date,
+                              transaction.payee_name or '',
+                              f"${transaction.amount:.2f}",
+                              transaction.current_category,
+                              transaction.suggested_category
+                          ])
+                  
+                  return self.filename
+          
+          # Example usage
+          def generate_recategorization_csv(transactions, original_category_name):
+              """Generate CSV for manual recategorization"""
+              export_data = []
+              
+              for transaction in transactions:
+                  # Convert from milliunits to dollars
+                  amount = abs(transaction.amount) / 1000
+                  
+                  # Suggest category
+                  suggested = suggest_subcategory({
+                      'payee_name': transaction.payee_name or '',
+                      'amount': transaction.amount
+                  })
+                  
+                  export_data.append(
+                      TransactionExport(
+                          id=transaction.id,
+                          date=transaction.date.isoformat(),
+                          payee_name=transaction.payee_name,
+                          amount=amount,
+                          current_category=original_category_name,
+                          suggested_category=suggested
+                      )
+                  )
+              
+              # Generate CSV
+              exporter = ExportGenerator(transactions=export_data)
+              filename = exporter.generate_csv()
+              
+              print(f"CSV generated at {filename}. Import this file into your spreadsheet and use it as a guide for manual recategorization.")
+          ```
+
+best_practices:
+  - "Use Pydantic models for all data structures to ensure validation and type safety"
+  - "Implement proper error handling for API calls with specific exception types"
+  - "Use batching for large operations to avoid rate limits"
+  - "Cache category and payee data locally with TTL (time-to-live) values"
+  - "Consider the user experience when designing category structures"
+  - "Test your category changes on a test budget before applying to your main budget"
+  - "Keep category names consistent and meaningful"
+  - "Use Pydantic's schema_extra for documentation and examples"
+  - "Leverage Pydantic validators for complex validation rules"
+  - "Use Pydantic's to_dict() and from_dict() methods for serialization"
